@@ -1,4 +1,4 @@
-# Stream M3U8 Proxy
+# Stream M3U8 Proxy Player
 
 Aplicação web para reproduzir streams IPTV/M3U8 com um proxy HTTP próprio e buffer de segmentos HLS no backend. A interface permite abrir links diretos, carregar playlists M3U/M3U8, pesquisar canais, filtrar por grupo/categoria e reproduzir o stream selecionado no navegador.
 
