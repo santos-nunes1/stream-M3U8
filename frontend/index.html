@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stream M3U8 Proxy</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="hero">
+        <div class="hero-content">
+          <p class="eyebrow">Seu centro de streaming</p>
+          <h1>Assista seus canais, filmes e séries em uma interface simples.</h1>
+          <p class="description">
+            Carregue sua playlist, encontre o que quer assistir e dê play sem lidar com links técnicos.
+          </p>
+          <div class="hero-highlights" aria-label="Recursos principais">
+            <span>Player local</span>
+            <span>Busca rápida</span>
+            <span>Logos e categorias</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="favorites-panel" class="favorites-panel" hidden>
+        <div class="favorites-header">
+          <span>Favoritos da sessão</span>
+          <small>Acesso rápido enquanto esta sessão estiver aberta.</small>
+        </div>
+        <div id="favorite-shortcuts" class="favorite-shortcuts"></div>
+      </section>
+
+      <section class="panel player-panel">
+        <div class="section-title">
+          <div id="now-playing" class="now-playing">
+            <div id="now-playing-logo" class="now-playing-logo placeholder">TV</div>
+            <div class="now-playing-body">
+              <span class="now-playing-label">Player</span>
+              <h2 id="now-playing-title">Nenhum stream selecionado</h2>
+              <small id="now-playing-meta">Escolha um item da lista para reproduzir.</small>
+            </div>
+          </div>
+          <div class="player-actions">
+            <label class="playback-mode-label" for="playback-mode">
+              Modo
+              <select id="playback-mode">
+                <option value="auto">Auto</option>
+                <option value="direct">Direto</option>
+                <option value="proxy">Proxy</option>
+              </select>
+            </label>
+            <button id="stop-stream" class="danger" type="button" disabled>Parar</button>
+          </div>
+        </div>
+        <video id="video" controls playsinline></video>
+        <div id="status" class="status" hidden>Aguardando stream.</div>
+        <div id="proxy-url" class="proxy-url" hidden></div>
+      </section>
+
+      <section class="panel streams-panel">
+        <div class="section-title">
+          <h2>Streams encontrados</h2>
+          <div class="section-actions">
+            <span id="entry-count">0 itens</span>
+            <button id="load-test" class="ghost small-button" type="button">Atualizar playlist</button>
+          </div>
+        </div>
+        <div class="filters">
+          <button class="filter active" data-category="all" type="button">Tudo</button>
+          <button class="filter" data-category="tv" type="button">TV</button>
+          <button class="filter" data-category="movies" type="button">Filmes</button>
+          <button class="filter" data-category="series" type="button">Series</button>
+        </div>
+        <div class="row filter-row">
+          <input id="entry-search" type="search" placeholder="Buscar por nome, grupo ou URL" autocomplete="off" />
+          <select id="group-filter">
+            <option value="">Todos os grupos</option>
+          </select>
+        </div>
+        <div id="playlist-entries" class="entries empty">
+          Nenhuma playlist carregada.
+        </div>
+        <button id="load-more" class="ghost load-more" type="button" hidden>Carregar mais</button>
+      </section>
+
+      <section class="utility-panels">
+        <details class="panel compact-panel collapsible-panel">
+          <summary>
+            <span>
+              <strong>Link direto</strong>
+              <small>Use eventualmente para testar uma URL especifica.</small>
+            </span>
+          </summary>
+          <div class="collapsible-content">
+            <div class="row">
+              <input
+                id="direct-url"
+                type="url"
+                placeholder="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+                autocomplete="off"
+              />
+              <button id="start-direct" type="button">Iniciar</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="panel collapsible-panel">
+          <summary>
+            <span>
+              <strong>Carregar playlist manualmente</strong>
+              <small>Opcional: URL, arquivo local ou texto colado.</small>
+            </span>
+          </summary>
+          <div class="collapsible-content">
+            <label for="playlist-url">URL da playlist</label>
+            <div class="row">
+              <input id="playlist-url" type="url" placeholder="https://exemplo.com/lista.m3u" autocomplete="off" />
+              <button id="load-playlist-url" type="button">Carregar</button>
+            </div>
+
+            <label for="playlist-file">Arquivo local .m3u/.m3u8</label>
+            <input id="playlist-file" type="file" accept=".m3u,.m3u8,text/plain,application/vnd.apple.mpegurl" />
+
+            <label for="playlist-text">Ou cole o conteúdo</label>
+            <textarea id="playlist-text" rows="8" placeholder="#EXTM3U&#10;#EXTINF:-1, Canal&#10;https://.../index.m3u8"></textarea>
+            <button id="parse-playlist-text" type="button">Ler playlist</button>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <div id="status-modal" class="modal-backdrop" hidden>
+      <div class="modal" role="status" aria-live="polite" aria-labelledby="status-modal-title">
+        <div class="modal-header">
+          <h2 id="status-modal-title">Carregando playlist</h2>
+          <button id="status-modal-close" class="ghost modal-close" type="button" aria-label="Fechar popup">Fechar</button>
+        </div>
+        <div id="status-modal-spinner" class="spinner" aria-hidden="true"></div>
+        <p id="status-modal-message">Aguarde enquanto a playlist e carregada.</p>
+        <div id="download-progress" class="download-progress" hidden>
+          <div class="progress-header">
+            <span id="download-progress-label">0%</span>
+            <span id="download-progress-remaining">Calculando tamanho...</span>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <div id="download-progress-bar" class="progress-bar"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@latest"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

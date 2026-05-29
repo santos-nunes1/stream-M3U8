@@ -1,0 +1,37 @@
+services:
+  stream-m3u8:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stream-m3u8
+    ports:
+      - "8000:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      HOST_LAN_IP: ${HOST_LAN_IP:-}
+      STREAM_CACHE_ROOT: /tmp/stream-buffer
+      STREAM_BUFFER_SECONDS: 120
+      STREAM_DOWNLOAD_TIMEOUT: 10
+      STREAM_PLAYBACK_MODE: ${STREAM_PLAYBACK_MODE:-auto}
+      PLAYLIST_FETCH_TIMEOUT: 45
+      PRELOADED_PLAYLIST_PATH: /app/data/preloaded_playlist.m3u
+      PLAYLIST_CACHE_URL: ${PLAYLIST_CACHE_URL:-}
+      PLAYLIST_REFRESH_ON_STARTUP: ${PLAYLIST_REFRESH_ON_STARTUP:-true}
+      PLAYLIST_REFRESH_REQUIRED_ON_STARTUP: ${PLAYLIST_REFRESH_REQUIRED_ON_STARTUP:-true}
+      PLAYLIST_REFRESH_INTERVAL_SECONDS: ${PLAYLIST_REFRESH_INTERVAL_SECONDS:-43200}
+      STREAM_POLL_INTERVAL: 0.5
+      STREAM_MAX_CACHE_BYTES: 209715200
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  public-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: stream-m3u8-public
+    command: tunnel --no-autoupdate --url http://stream-m3u8:8000
+    depends_on:
+      - stream-m3u8
+    profiles:
+      - public
+    restart: unless-stopped
