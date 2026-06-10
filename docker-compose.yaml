@@ -4,34 +4,187 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: stream-m3u8
+    init: true
     ports:
       - "8000:8000"
     environment:
+      STREAM_ENV: production
       HOST: 0.0.0.0
       PORT: 8000
       HOST_LAN_IP: ${HOST_LAN_IP:-}
       STREAM_CACHE_ROOT: /tmp/stream-buffer
-      STREAM_BUFFER_SECONDS: 120
+      STREAM_BUFFER_SECONDS: ${STREAM_BUFFER_SECONDS:-150}
       STREAM_DOWNLOAD_TIMEOUT: 10
       STREAM_PLAYBACK_MODE: ${STREAM_PLAYBACK_MODE:-auto}
-      PLAYLIST_FETCH_TIMEOUT: 45
+      AUTH_DB_PATH: ${AUTH_DB_PATH:-/app/data/auth.sqlite3}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:?Set AUTH_TOKEN_SECRET with at least 32 random characters}
+      AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-3600}
+      AUTH_MIN_TOKEN_TTL_SECONDS: ${AUTH_MIN_TOKEN_TTL_SECONDS:-3600}
+      AUTH_SESSION_STALE_SECONDS: ${AUTH_SESSION_STALE_SECONDS:-3600}
+      AUTH_SCREEN_LEASE_SECONDS: ${AUTH_SCREEN_LEASE_SECONDS:-300}
+      AUTH_DEFAULT_MAX_SCREENS: ${AUTH_DEFAULT_MAX_SCREENS:-2}
+      AUTH_DEFAULT_ACCESS_DAYS: ${AUTH_DEFAULT_ACCESS_DAYS:-30}
+      AUTH_ADMIN_TOKEN: ${AUTH_ADMIN_TOKEN:?Set AUTH_ADMIN_TOKEN}
+      AUTH_REGISTRATION_TOKEN: ${AUTH_REGISTRATION_TOKEN:-}
+      PLAYLIST_FETCH_TIMEOUT: ${PLAYLIST_FETCH_TIMEOUT:-300}
       PRELOADED_PLAYLIST_PATH: /app/data/preloaded_playlist.m3u
       PLAYLIST_CACHE_URL: ${PLAYLIST_CACHE_URL:-}
+      PLAYLIST_REQUIRED_ON_STARTUP: ${PLAYLIST_REQUIRED_ON_STARTUP:-true}
+      PLAYLIST_MAX_AGE_SECONDS: ${PLAYLIST_MAX_AGE_SECONDS:-21600}
       PLAYLIST_REFRESH_ON_STARTUP: ${PLAYLIST_REFRESH_ON_STARTUP:-true}
+      PLAYLIST_LOAD_BEFORE_SERVING: ${PLAYLIST_LOAD_BEFORE_SERVING:-true}
+      PLAYLIST_REFRESH_BLOCKING_ON_STARTUP: "true"
       PLAYLIST_REFRESH_REQUIRED_ON_STARTUP: ${PLAYLIST_REFRESH_REQUIRED_ON_STARTUP:-true}
-      PLAYLIST_REFRESH_INTERVAL_SECONDS: ${PLAYLIST_REFRESH_INTERVAL_SECONDS:-43200}
+      PLAYLIST_REFRESH_INTERVAL_SECONDS: ${PLAYLIST_REFRESH_INTERVAL_SECONDS:-21600}
+      PLAYLIST_PARSED_CACHE_MAX_BYTES: ${PLAYLIST_PARSED_CACHE_MAX_BYTES:-52428800}
       STREAM_POLL_INTERVAL: 0.5
       STREAM_MAX_CACHE_BYTES: 209715200
+      STREAM_TRANSMUX_MPEGTS_TO_HLS: ${STREAM_TRANSMUX_MPEGTS_TO_HLS:-true}
+      TRANSMUX_CACHE_ROOT: /tmp/stream-buffer/transmux
+      TRANSMUX_HLS_TIME_SECONDS: ${TRANSMUX_HLS_TIME_SECONDS:-3}
+      TRANSMUX_HLS_LIST_SIZE: ${TRANSMUX_HLS_LIST_SIZE:-8}
+      TRANSMUX_START_TIMEOUT_SECONDS: ${TRANSMUX_START_TIMEOUT_SECONDS:-8}
     volumes:
-      - ./data:/app/data
+      - stream_m3u8_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 3072m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('PORT', '8000'))), 20); s.sendall(b'GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 300s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     restart: unless-stopped
 
   public-tunnel:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2025.6.1
     container_name: stream-m3u8-public
-    command: tunnel --no-autoupdate --url http://stream-m3u8:8000
+    command: tunnel --no-autoupdate --protocol http2 --url http://stream-m3u8:8000
     depends_on:
-      - stream-m3u8
+      stream-m3u8:
+        condition: service_healthy
     profiles:
       - public
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stream-m3u8-bot
+    init: true
+    command: python -m bot.telegram_pix_bot
+    profiles:
+      - bot
+      - bot-public
+      - cloudflare
+    ports:
+      - "${BOT_PORT:-8081}:8081"
+    environment:
+      BOT_HOST: 0.0.0.0
+      BOT_PORT: 8081
+      BOT_DB_PATH: /app/bot-data/orders.sqlite3
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      MERCADO_PAGO_ACCESS_TOKEN: ${MERCADO_PAGO_ACCESS_TOKEN:-}
+      MERCADO_PAGO_PAYER_EMAIL: ${MERCADO_PAGO_PAYER_EMAIL:-contato.vnunes@gmail.com}
+      MERCADO_PAGO_WEBHOOK_SECRET: ${MERCADO_PAGO_WEBHOOK_SECRET:-}
+      BOT_PUBLIC_BASE_URL: ${BOT_PUBLIC_BASE_URL:-}
+      APP_INTERNAL_BASE_URL: http://stream-m3u8:8000
+      APP_PUBLIC_BASE_URL: ${APP_PUBLIC_BASE_URL:-http://localhost:8000}
+      AUTH_ADMIN_TOKEN: ${AUTH_ADMIN_TOKEN:-}
+      PLANS_JSON: ${PLANS_JSON:-}
+    volumes:
+      - stream_m3u8_bot_data:/app/bot-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - KILL
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: 0.5
+    depends_on:
+      stream-m3u8:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('BOT_PORT', '8081'))), 10); s.sendall(b'GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  bot-public-tunnel:
+    image: cloudflare/cloudflared:2025.6.1
+    container_name: stream-m3u8-bot-public
+    command: tunnel --no-autoupdate --protocol http2 --url http://bot-worker:8081
+    depends_on:
+      bot-worker:
+        condition: service_healthy
+    profiles:
+      - bot-public
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflare-tunnel:
+    image: cloudflare/cloudflared:2025.6.1
+    container_name: stream-m3u8-cloudflare
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN:-}
+    depends_on:
+      stream-m3u8:
+        condition: service_healthy
+      bot-worker:
+        condition: service_healthy
+    profiles:
+      - cloudflare
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  stream_m3u8_data:
+  stream_m3u8_bot_data:

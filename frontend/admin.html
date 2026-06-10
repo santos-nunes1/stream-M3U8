@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gerenciar usuários | Stream Hub</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top-bar">
+        <div class="ship-brand" aria-label="Stream Hub Pirata">
+          <span class="helm-icon" aria-hidden="true"></span>
+          <span>
+            <strong>Stream Corsário</strong>
+            <small>Gerenciamento</small>
+          </span>
+        </div>
+        <nav class="admin-nav-links" aria-label="Navegação administrativa">
+          <a class="admin-nav-link" href="/monitoring">Monitoramento</a>
+          <a class="admin-nav-link" href="/">Voltar ao player</a>
+        </nav>
+      </header>
+
+      <section id="admin-login-panel" class="auth-panel panel">
+        <div>
+          <span class="section-kicker">Admin</span>
+          <h1>Acesso do gerenciador</h1>
+          <p>Informe o token administrativo configurado em <code>AUTH_ADMIN_TOKEN</code>.</p>
+        </div>
+        <form id="admin-login-form" class="auth-form">
+          <label for="admin-token">Token administrativo</label>
+          <input id="admin-token" type="password" autocomplete="off" required />
+          <button type="submit">Entrar</button>
+          <p id="admin-login-message" class="auth-message" hidden></p>
+        </form>
+      </section>
+
+      <section id="admin-panel" class="panel admin-panel" hidden>
+        <div class="section-title">
+          <div>
+            <span class="section-kicker">Usuários</span>
+            <h1>Gerenciar acessos</h1>
+          </div>
+          <div class="section-actions">
+            <button id="admin-refresh" class="ghost small-button" type="button">Atualizar</button>
+            <button id="admin-logout" class="ghost small-button" type="button">Sair</button>
+          </div>
+        </div>
+
+        <form id="user-form" class="admin-user-form">
+          <input id="editing-user-id" type="hidden" />
+          <div class="admin-form-grid">
+            <label>
+              Nome
+              <input id="user-name" type="text" autocomplete="name" required />
+            </label>
+            <label>
+              E-mail
+              <input id="user-email" type="email" autocomplete="email" required />
+            </label>
+            <label>
+              Telas simultâneas
+              <input id="user-max-screens" type="number" min="1" step="1" value="2" required />
+            </label>
+            <label>
+              Validade do link
+              <input id="user-access-expires-at" type="datetime-local" required />
+            </label>
+          </div>
+          <div class="admin-checks">
+            <label class="checkbox-label">
+              <input id="user-allow-adult" type="checkbox" />
+              Permitir conteúdo adulto
+            </label>
+            <label class="checkbox-label">
+              <input id="user-active" type="checkbox" checked />
+              Usuário ativo
+            </label>
+          </div>
+          <div class="admin-form-actions">
+            <button id="save-user" type="submit">Criar usuário</button>
+            <button id="cancel-edit" class="ghost" type="button" hidden>Cancelar edição</button>
+          </div>
+          <p id="admin-message" class="auth-message" hidden></p>
+        </form>
+
+        <div class="admin-user-filter">
+          <label for="user-filter">Filtrar usuários</label>
+          <input id="user-filter" type="search" autocomplete="off" placeholder="Digite nome ou e-mail" />
+        </div>
+
+        <div id="users-list" class="users-list empty">Nenhum usuário carregado.</div>
+      </section>
+    </main>
+    <script src="/admin.js"></script>
+  </body>
+</html>

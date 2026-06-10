@@ -3,22 +3,50 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Stream M3U8 Proxy</title>
+    <title>Stream Hub</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="app">
-      <section class="hero">
-        <div class="hero-content">
-          <p class="eyebrow">Seu centro de streaming</p>
-          <h1>Assista seus canais, filmes e séries em uma interface simples.</h1>
-          <p class="description">
-            Carregue sua playlist, encontre o que quer assistir e dê play sem lidar com links técnicos.
-          </p>
-          <div class="hero-highlights" aria-label="Recursos principais">
-            <span>Player local</span>
-            <span>Busca rápida</span>
-            <span>Logos e categorias</span>
+      <header class="top-bar">
+        <div class="ship-brand" aria-label="Stream Hub Pirata">
+          <span class="helm-icon" aria-hidden="true"></span>
+          <span>
+            <strong>Stream Corsário</strong>
+            <small>TV a bordo</small>
+          </span>
+        </div>
+        <aside class="clock-card" aria-label="Relógio local">
+          <span class="clock-kicker">Agora</span>
+          <strong id="clock-time">--:--</strong>
+          <span id="clock-date">Carregando data...</span>
+          <div class="clock-orbit" aria-hidden="true">
+            <span></span>
+          </div>
+        </aside>
+        <div class="user-card" data-auth-required hidden>
+          <span id="auth-user-name">Usuário</span>
+          <small id="auth-user-limits">Sessão ativa</small>
+          <button id="logout" class="ghost small-button" type="button">Sair</button>
+        </div>
+      </header>
+
+      <section id="auth-panel" class="auth-panel panel">
+        <div>
+          <span class="section-kicker">Acesso</span>
+          <h1>Entrar no Stream Hub</h1>
+          <p>Use sua URL única de acesso. Ao abrir o link, a sessão é criada automaticamente respeitando o limite configurado de telas simultâneas.</p>
+        </div>
+        <div class="auth-login-stack">
+          <form id="login-form" class="auth-form">
+            <label for="access-hash">Link ou hash de acesso</label>
+            <input id="access-hash" type="password" autocomplete="off" placeholder="Cole sua URL única ou hash" required />
+            <button type="submit">Acessar</button>
+            <p id="auth-message" class="auth-message" hidden></p>
+          </form>
+          <div class="telegram-access-actions">
+            <a class="telegram-access-link" href="https://t.me/streamCorsarioBot" target="_blank" rel="noopener noreferrer">Adquira seu link de acesso</a>
           </div>
         </div>
       </section>
@@ -31,7 +59,72 @@
         <div id="favorite-shortcuts" class="favorite-shortcuts"></div>
       </section>
 
-      <section class="panel player-panel">
+      <section id="trial-panel" class="panel trial-panel" data-auth-required hidden>
+        <div class="section-title">
+          <div>
+            <span class="section-kicker">Degustação gratuita</span>
+            <h2>Conteúdos liberados para teste</h2>
+            <p class="trial-intro">Explore o potencial do app com uma seleção destacada.</p>
+          </div>
+        </div>
+        <div id="trial-sections" class="trial-sections">
+          <div class="inline-loader" role="status" aria-live="polite">
+            <span class="inline-spinner" aria-hidden="true"></span>
+            <span>Carregando conteúdos liberados...</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel streams-panel" data-auth-required hidden>
+        <div class="section-title">
+          <div>
+            <span class="section-kicker">Escolha o conteúdo</span>
+            <h2>Streams encontrados</h2>
+          </div>
+          <div class="section-actions">
+            <span id="entry-count">0 itens</span>
+          </div>
+        </div>
+        <div class="filters" aria-label="Filtros de categoria">
+          <button class="filter world-cup-filter" data-category="world_cup" type="button"><img class="world-cup-logo" src="world-cup-2026.jpg?v=2" alt="" aria-hidden="true" />Copa do Mundo 2026</button>
+          <button class="filter" data-category="daily_games" type="button">Esportes</button>
+          <button class="filter" data-category="tv" type="button">TV</button>
+          <button class="filter" data-category="reality" type="button">Reality</button>
+          <button class="filter" data-category="movies" type="button">Filmes</button>
+          <button class="filter" data-category="series" type="button">Series</button>
+        </div>
+        <div id="tv-quick-links" class="tv-quick-links" aria-label="Links rápidos de TV" hidden></div>
+        <div id="world-cup-quick-links" class="tv-quick-links world-cup-quick-links" aria-label="Jogos de seleções" hidden></div>
+        <div id="reality-quick-links" class="tv-quick-links" aria-label="Links rápidos de reality" hidden></div>
+        <div id="daily-game-quick-links" class="tv-quick-links" aria-label="Links rápidos de esportes" hidden></div>
+        <div id="series-streamer-links" class="tv-quick-links" aria-label="Filtros rápidos de streamers" hidden></div>
+        <div class="filter-controls">
+          <div class="row filter-row search-filter-row">
+            <label class="search-shell" for="entry-search">
+              <span class="search-helm" aria-hidden="true"></span>
+              <span class="search-copy">
+                <span>Buscar título</span>
+                <input id="entry-search" type="search" placeholder="Digite canal, filme, serie ou jogo" autocomplete="off" />
+              </span>
+            </label>
+          </div>
+          <div class="row filter-row group-filter-row">
+            <label class="group-filter-shell" for="group-filter">
+              <span>Grupo</span>
+              <select id="group-filter" aria-label="Filtrar por grupo">
+                <option value="">Todos os grupos</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="status" class="status top-status stream-status" data-auth-required hidden>Aguardando stream.</div>
+        <div id="playlist-entries" class="entries empty">
+          Nenhuma playlist carregada.
+        </div>
+        <button id="load-more" class="ghost load-more" type="button" hidden>Carregar mais</button>
+      </section>
+
+      <section class="panel player-panel" data-auth-required hidden>
         <div class="section-title">
           <div id="now-playing" class="now-playing">
             <div id="now-playing-logo" class="now-playing-logo placeholder">TV</div>
@@ -50,85 +143,32 @@
                 <option value="proxy">Proxy</option>
               </select>
             </label>
+            <label class="playback-mode-label" for="external-player">
+              Player externo
+              <select id="external-player">
+                <option value="vlc">VLC</option>
+                <option value="outplayer">Outplayer</option>
+              </select>
+            </label>
+            <button id="open-vlc" class="ghost" type="button" disabled>Abrir player externo</button>
+            <button id="resume-browser-playback" class="ghost subtle-action" type="button" hidden>Reproduzir aqui</button>
             <button id="stop-stream" class="danger" type="button" disabled>Parar</button>
           </div>
         </div>
-        <video id="video" controls playsinline></video>
-        <div id="status" class="status" hidden>Aguardando stream.</div>
+        <video id="video" controls playsinline preload="auto"></video>
         <div id="proxy-url" class="proxy-url" hidden></div>
       </section>
 
-      <section class="panel streams-panel">
-        <div class="section-title">
-          <h2>Streams encontrados</h2>
-          <div class="section-actions">
-            <span id="entry-count">0 itens</span>
-            <button id="load-test" class="ghost small-button" type="button">Atualizar playlist</button>
-          </div>
-        </div>
-        <div class="filters">
-          <button class="filter active" data-category="all" type="button">Tudo</button>
-          <button class="filter" data-category="tv" type="button">TV</button>
-          <button class="filter" data-category="movies" type="button">Filmes</button>
-          <button class="filter" data-category="series" type="button">Series</button>
-        </div>
-        <div class="row filter-row">
-          <input id="entry-search" type="search" placeholder="Buscar por nome, grupo ou URL" autocomplete="off" />
-          <select id="group-filter">
-            <option value="">Todos os grupos</option>
-          </select>
-        </div>
-        <div id="playlist-entries" class="entries empty">
-          Nenhuma playlist carregada.
-        </div>
-        <button id="load-more" class="ghost load-more" type="button" hidden>Carregar mais</button>
-      </section>
-
-      <section class="utility-panels">
-        <details class="panel compact-panel collapsible-panel">
-          <summary>
-            <span>
-              <strong>Link direto</strong>
-              <small>Use eventualmente para testar uma URL especifica.</small>
-            </span>
-          </summary>
-          <div class="collapsible-content">
-            <div class="row">
-              <input
-                id="direct-url"
-                type="url"
-                placeholder="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
-                autocomplete="off"
-              />
-              <button id="start-direct" type="button">Iniciar</button>
-            </div>
-          </div>
-        </details>
-
-        <details class="panel collapsible-panel">
-          <summary>
-            <span>
-              <strong>Carregar playlist manualmente</strong>
-              <small>Opcional: URL, arquivo local ou texto colado.</small>
-            </span>
-          </summary>
-          <div class="collapsible-content">
-            <label for="playlist-url">URL da playlist</label>
-            <div class="row">
-              <input id="playlist-url" type="url" placeholder="https://exemplo.com/lista.m3u" autocomplete="off" />
-              <button id="load-playlist-url" type="button">Carregar</button>
-            </div>
-
-            <label for="playlist-file">Arquivo local .m3u/.m3u8</label>
-            <input id="playlist-file" type="file" accept=".m3u,.m3u8,text/plain,application/vnd.apple.mpegurl" />
-
-            <label for="playlist-text">Ou cole o conteúdo</label>
-            <textarea id="playlist-text" rows="8" placeholder="#EXTM3U&#10;#EXTINF:-1, Canal&#10;https://.../index.m3u8"></textarea>
-            <button id="parse-playlist-text" type="button">Ler playlist</button>
-          </div>
-        </details>
-      </section>
     </main>
+
+    <div id="hub-loading" class="hub-loading" role="status" aria-live="polite" hidden>
+      <div class="hub-loading-card">
+        <div class="hub-loading-helm" aria-hidden="true"></div>
+        <h1>Carregando Hub Corsário</h1>
+        <p id="hub-loading-phase">Preparando playlist...</p>
+        <span class="sr-only">Carregando Hub Corsário enquanto a playlist é baixada e indexada.</span>
+      </div>
+    </div>
 
     <div id="status-modal" class="modal-backdrop" hidden>
       <div class="modal" role="status" aria-live="polite" aria-labelledby="status-modal-title">
@@ -147,11 +187,26 @@
             <div id="download-progress-bar" class="progress-bar"></div>
           </div>
         </div>
+        <div id="status-modal-actions" class="modal-actions" hidden>
+          <button id="status-modal-play-browser" class="ghost" type="button">Reproduzir no navegador</button>
+          <button id="status-modal-open-external" type="button">Abrir player externo</button>
+        </div>
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@latest"></script>
+    <div id="episode-modal" class="modal-backdrop" hidden>
+      <div class="modal episode-modal" role="dialog" aria-modal="true" aria-labelledby="episode-modal-title">
+        <div class="modal-header">
+          <h2 id="episode-modal-title">Escolha a reprodução</h2>
+          <button id="episode-modal-close" class="ghost modal-close" type="button" aria-label="Fechar popup">Fechar</button>
+        </div>
+        <p id="episode-modal-message">Selecione uma opção disponível para este episódio.</p>
+        <div id="episode-modal-options" class="episode-option-list"></div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

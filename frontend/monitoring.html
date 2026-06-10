@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monitoramento | Stream Hub</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top-bar">
+        <div class="ship-brand" aria-label="Stream Hub Pirata">
+          <span class="helm-icon" aria-hidden="true"></span>
+          <span>
+            <strong>Stream Corsário</strong>
+            <small>Dashboards, logs e monitoramento</small>
+          </span>
+        </div>
+        <nav class="admin-nav-links" aria-label="Navegação administrativa">
+          <a class="admin-nav-link" href="/admin">Gerenciar usuários</a>
+          <a class="admin-nav-link" href="/">Voltar ao player</a>
+        </nav>
+      </header>
+
+      <section id="monitoring-login-panel" class="auth-panel panel">
+        <div>
+          <span class="section-kicker">Admin</span>
+          <h1>Acesso ao monitoramento</h1>
+          <p>Informe o token administrativo configurado em <code>AUTH_ADMIN_TOKEN</code>.</p>
+        </div>
+        <form id="monitoring-login-form" class="auth-form">
+          <label for="monitoring-token">Token administrativo</label>
+          <input id="monitoring-token" type="password" autocomplete="off" required />
+          <button type="submit">Entrar</button>
+          <p id="monitoring-login-message" class="auth-message" hidden></p>
+        </form>
+      </section>
+
+      <section id="monitoring-panel" class="panel admin-panel" hidden>
+        <div class="section-title">
+          <div>
+            <span class="section-kicker">Monitoramento</span>
+            <h1>Dashboards e logs</h1>
+          </div>
+          <div class="section-actions">
+            <small id="monitoring-updated">Aguardando atualização.</small>
+            <button id="monitoring-refresh" class="ghost small-button" type="button">Atualizar</button>
+            <button id="monitoring-logout" class="ghost small-button" type="button">Sair</button>
+          </div>
+        </div>
+
+        <section class="monitoring-panel" aria-label="Resumo de acesso">
+          <div id="monitoring-summary" class="monitoring-summary"></div>
+          <div class="monitoring-grid">
+            <article class="monitoring-card">
+              <h3>Online agora</h3>
+              <div id="online-users-list" class="monitoring-list empty">Nenhum usuário online.</div>
+            </article>
+            <article class="monitoring-card">
+              <h3>Conteúdos mais acessados</h3>
+              <div id="top-content-list" class="monitoring-list empty">Nenhum conteúdo acessado recentemente.</div>
+            </article>
+          </div>
+          <article class="monitoring-card">
+            <h3>Últimos eventos</h3>
+            <div id="recent-events-list" class="monitoring-list empty">Nenhum evento recente.</div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script src="/monitoring.js"></script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 class StreamOfflineError(Exception):
@@ -32,6 +33,56 @@ class StreamConfigurationError(Exception):
 
 
 EXTINF_ATTR_RE = re.compile(r'([A-Za-z0-9_-]+)="([^"]*)"')
+ABSOLUTE_URL_PREFIXES = ("http://", "https://", "//")
+PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain"}
+SERIES_PATTERNS = [
+    re.compile(
+        r"(?P<title>.+?)[\s._-]+S(?P<season>\d{1,2})[\s._-]*E(?P<episode>\d{1,3})(?:[\s._-]+(?P<episode_title>.*))?$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<title>.+?)[\s._-]+(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?:[\s._-]+(?P<episode_title>.*))?$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<title>.+?)[\s._-]+(?:temporada|temp|t)\s*(?P<season>\d{1,2})[\s._-]+(?:episodio|episódio|ep|e)\s*(?P<episode>\d{1,3})(?:[\s._-]+(?P<episode_title>.*))?$",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_private_address(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return True
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+
+
+def validate_public_source_url(url: str) -> str:
+    value = str(url or "").strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise StreamConfigurationError("URL de origem invalida")
+    hostname = parsed.hostname.strip().lower()
+    if hostname in PRIVATE_HOSTNAMES:
+        raise StreamConfigurationError("URL interna nao permitida")
+    if _env_enabled("STREAM_ALLOW_PRIVATE_SOURCE_URLS", False):
+        return value
+    try:
+        for _, _, _, _, sockaddr in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM):
+            if _is_private_address(sockaddr[0]):
+                raise StreamConfigurationError("URL interna nao permitida")
+    except socket.gaierror as exc:
+        raise StreamConfigurationError("Host da URL nao foi resolvido") from exc
+    return value
 
 
 @dataclass
@@ -53,6 +104,7 @@ class ParsedPlaylist:
 @dataclass
 class StreamState:
     stream_id: str
+    public_id: str
     source_url: str
     media_url: str
     cache_dir: Path
@@ -72,7 +124,7 @@ class StreamBufferingService:
     def __init__(
         self,
         cache_root: Optional[str] = None,
-        buffer_seconds: int = 120,
+        buffer_seconds: int = 150,
         download_timeout: float = 10.0,
         poll_interval: float = 0.5,
         max_cache_bytes: int = 200 * 1024 * 1024,
@@ -83,12 +135,13 @@ class StreamBufferingService:
         self.poll_interval = poll_interval
         self.max_cache_bytes = max_cache_bytes
         self._states: Dict[str, StreamState] = {}
+        self._public_to_stream: Dict[str, str] = {}
         self._states_lock = threading.Lock()
         self._cache_lock = threading.Lock()
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
     def build_local_proxy_url(self, stream_id: str, base_url: str) -> str:
-        quoted = urllib.parse.quote(stream_id, safe="")
+        quoted = urllib.parse.quote(self.public_id_for(stream_id), safe="")
         return f"{base_url.rstrip('/')}/proxy/{quoted}/playlist.m3u8"
 
     def build_direct_proxy_url(self, stream_id: str, base_url: str) -> str:
@@ -104,13 +157,20 @@ class StreamBufferingService:
     def _cache_dir_for(self, stream_id: str) -> Path:
         return self.cache_dir_for(stream_id)
 
+    def public_id_for(self, stream_id: str) -> str:
+        return hashlib.sha256(stream_id.encode("utf-8")).hexdigest()
+
+    def _state_for_public_id(self, public_id: str) -> Optional[StreamState]:
+        stream_id = self._public_to_stream.get(public_id)
+        return self._states.get(stream_id or public_id)
+
     def resolve_source_url(self, stream_id: str) -> str:
         if stream_id.startswith(("http://", "https://")):
-            return stream_id
+            return validate_public_source_url(stream_id)
 
         template = os.getenv("STREAM_ORIGIN_TEMPLATE")
         if template:
-            return template.format(stream_id=stream_id)
+            return validate_public_source_url(template.format(stream_id=stream_id))
 
         source_map = os.getenv("STREAM_SOURCE_MAP")
         if source_map:
@@ -119,7 +179,7 @@ class StreamBufferingService:
             except json.JSONDecodeError as exc:
                 raise StreamConfigurationError("STREAM_SOURCE_MAP must be valid JSON") from exc
             if stream_id in data:
-                return data[stream_id]
+                return validate_public_source_url(data[stream_id])
 
         raise StreamConfigurationError(
             "No source URL available. Send a direct URL or set STREAM_ORIGIN_TEMPLATE/STREAM_SOURCE_MAP."
@@ -128,10 +188,11 @@ class StreamBufferingService:
     def start_stream(self, stream_id: str, base_url: str) -> Dict[str, str]:
         source_url = self.resolve_source_url(stream_id)
         if self._is_direct_media_url(source_url):
+            media_kind = classify_media_kind(source_url, "")
             return {
                 "local_proxy_url": self.build_direct_proxy_url(stream_id, base_url),
                 "status": "proxying",
-                "media_kind": classify_media_kind(source_url, ""),
+                "media_kind": media_kind,
             }
 
         created = False
@@ -142,12 +203,14 @@ class StreamBufferingService:
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 state = StreamState(
                     stream_id=stream_id,
+                    public_id=self.public_id_for(stream_id),
                     source_url=source_url,
                     media_url=source_url,
                     cache_dir=cache_dir,
                     playlist_path=cache_dir / "playlist.m3u8",
                 )
                 self._states[stream_id] = state
+                self._public_to_stream[state.public_id] = stream_id
                 created = True
             state.active_clients += 1
             state.last_access = time.time()
@@ -158,6 +221,7 @@ class StreamBufferingService:
             except Exception:
                 with self._states_lock:
                     self._states.pop(stream_id, None)
+                    self._public_to_stream.pop(state.public_id, None)
                 shutil.rmtree(state.cache_dir, ignore_errors=True)
                 raise
             state.thread = threading.Thread(target=self._download_worker, args=(state,), daemon=True)
@@ -179,6 +243,7 @@ class StreamBufferingService:
             if state.active_clients == 0:
                 state.stop_event.set()
                 self._states.pop(stream_id, None)
+                self._public_to_stream.pop(state.public_id, None)
                 thread = state.thread
             else:
                 thread = None
@@ -190,23 +255,23 @@ class StreamBufferingService:
 
     def attach_client(self, stream_id: str) -> None:
         with self._states_lock:
-            state = self._states.get(stream_id)
+            state = self._state_for_public_id(stream_id)
             if state is not None:
                 state.last_access = time.time()
 
     def get_playlist_path(self, stream_id: str) -> Optional[Path]:
         with self._states_lock:
-            state = self._states.get(stream_id)
+            state = self._state_for_public_id(stream_id)
             return None if state is None else state.playlist_path
 
     def get_segment_path(self, stream_id: str, filename: str) -> Optional[Path]:
         with self._states_lock:
-            state = self._states.get(stream_id)
+            state = self._state_for_public_id(stream_id)
             return None if state is None else state.cache_dir / filename
 
     def ensure_segment_path(self, stream_id: str, filename: str) -> Optional[Path]:
         with self._states_lock:
-            state = self._states.get(stream_id)
+            state = self._state_for_public_id(stream_id)
             if state is None:
                 return None
             target = state.cache_dir / filename
@@ -221,16 +286,15 @@ class StreamBufferingService:
         return target
 
     def stream_cached_file(self, target: Path, writer) -> None:
-        with self._cache_lock:
-            with open(target, "rb") as handle:
-                while True:
-                    chunk = handle.read(1024 * 64)
-                    if not chunk:
-                        break
-                    try:
-                        writer.write(chunk)
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
+        with open(target, "rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 64)
+                if not chunk:
+                    break
+                try:
+                    writer.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
 
     def prune_cache(self, stream_id: str) -> None:
         with self._states_lock:
@@ -282,6 +346,7 @@ class StreamBufferingService:
         state.cache_complete = parsed.endlist and self._all_segments_cached(state, segments)
 
     def _urlopen(self, url: str, timeout: Optional[float] = None):
+        url = validate_public_source_url(url)
         context = None
         if os.getenv("STREAM_INSECURE_SSL", "false").lower() in {"1", "true", "yes", "on"}:
             context = ssl._create_unverified_context()
@@ -503,22 +568,55 @@ class StreamBufferingService:
 
 def parse_extinf_attributes(line: str) -> Dict[str, str]:
     attrs = {}
-    for key, value in EXTINF_ATTR_RE.findall(line):
-        attrs[key.lower()] = value.strip()
+    search_start = 0
+    while True:
+        value_start = line.find('="', search_start)
+        if value_start == -1:
+            break
+
+        key_start = value_start - 1
+        while key_start >= 0 and (line[key_start].isalnum() or line[key_start] in {"_", "-"}):
+            key_start -= 1
+        key_start += 1
+        value_end = line.find('"', value_start + 2)
+        if key_start == value_start or value_end == -1:
+            break
+
+        attrs[line[key_start:value_start].lower()] = line[value_start + 2:value_end].strip()
+        search_start = value_end + 1
     return attrs
 
 
 def classify_playlist_category(title: str, group: str, url: str) -> str:
-    value = f"{title} {group} {url}".lower()
-    movie_tokens = ("filme", "filmes", "movie", "movies", "vod", "/movie/")
-    series_tokens = ("serie", "series", "série", "séries", "/series/")
-    tv_tokens = ("tv", "canal", "canais", "channel", "live", "/live/")
+    title_group = f"{title} {group}".lower()
+    url_value = url.lower()
 
-    if any(token in value for token in movie_tokens):
+    if (
+        "filme" in title_group
+        or "filmes" in title_group
+        or "movie" in title_group
+        or "movies" in title_group
+        or "vod" in title_group
+        or "movie" in url_value
+        or "vod" in url_value
+    ):
         return "movies"
-    if any(token in value for token in series_tokens):
+    if (
+        "serie" in title_group
+        or "series" in title_group
+        or "série" in title_group
+        or "séries" in title_group
+        or "series" in url_value
+    ):
         return "series"
-    if any(token in value for token in tv_tokens):
+    if (
+        "tv" in title_group
+        or "canal" in title_group
+        or "canais" in title_group
+        or "channel" in title_group
+        or "live" in title_group
+        or "live" in url_value
+    ):
         return "tv"
     return "tv"
 
@@ -535,8 +633,45 @@ def classify_media_kind(url: str, fallback_type: str) -> str:
     return "native"
 
 
-def parse_playlist_entries(playlist_text: str, source_url: str = "") -> List[Dict[str, str]]:
-    line_iter = (line.strip() for line in playlist_text.splitlines())
+def _clean_series_text(value: str) -> str:
+    value = re.sub(r"\[[^\]]+\]|\([^)]+\)", " ", value)
+    value = re.sub(r"\b(dual audio|dublado|legendado|dub|leg|hd|fhd|uhd|4k|1080p|720p|480p)\b", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"[\s._-]+", " ", value)
+    return value.strip(" -._")
+
+
+def extract_series_metadata(title: str, group: str = "", url: str = "") -> Dict[str, str]:
+    source_title = title or url.rsplit("/", 1)[-1].split("?", 1)[0]
+    for pattern in SERIES_PATTERNS:
+        match = pattern.search(source_title)
+        if not match:
+            continue
+        series_title = _clean_series_text(match.group("title")) or group or source_title
+        season = str(int(match.group("season")))
+        episode = str(int(match.group("episode")))
+        episode_title = _clean_series_text(match.group("episode_title") or "")
+        series_key = hashlib.sha256(series_title.casefold().encode("utf-8")).hexdigest()[:16]
+        return {
+            "series_key": series_key,
+            "series_title": series_title,
+            "season_number": season,
+            "episode_number": episode,
+            "episode_title": episode_title,
+        }
+
+    fallback_title = _clean_series_text(group if group and group != "Sem grupo" else source_title)
+    series_key = hashlib.sha256((fallback_title or source_title).casefold().encode("utf-8")).hexdigest()[:16]
+    return {
+        "series_key": series_key,
+        "series_title": fallback_title or source_title,
+        "season_number": "",
+        "episode_number": "",
+        "episode_title": "",
+    }
+
+
+def parse_playlist_entries_from_lines(lines: Iterable[str], source_url: str = "", progress=None) -> List[Dict[str, str]]:
+    line_iter = (line.strip() for line in lines)
     first_line = next((line for line in line_iter if line), "")
     if not first_line.startswith("#EXTM3U"):
         raise InvalidPlaylistError("Playlist invalida")
@@ -572,24 +707,32 @@ def parse_playlist_entries(playlist_text: str, source_url: str = "") -> List[Dic
         if line.startswith("#"):
             continue
 
-        url = urllib.parse.urljoin(source_url, line) if source_url else line
+        url = urllib.parse.urljoin(source_url, line) if source_url and not line.startswith(ABSOLUTE_URL_PREFIXES) else line
         path = line.lower().split("?", 1)[0]
         entry_type = "variant" if pending_bandwidth else "playlist" if path.endswith(".m3u8") else "stream"
         title = pending_title or url.rsplit("/", 1)[-1].split("?", 1)[0] or url
         group = pending_group or "Sem grupo"
-        entries.append(
-            {
-                "title": title,
-                "url": url,
-                "type": entry_type,
-                "bandwidth": pending_bandwidth or "",
-                "resolution": pending_resolution or "",
-                "logo": pending_logo or "",
-                "group": group,
-                "category": classify_playlist_category(title, group, url),
-                "media_kind": classify_media_kind(url, entry_type),
-            }
-        )
+        category = classify_playlist_category(title, group, url)
+        entry = {
+            "title": title,
+            "url": url,
+            "type": entry_type,
+            "bandwidth": pending_bandwidth or "",
+            "resolution": pending_resolution or "",
+            "logo": pending_logo or "",
+            "group": group,
+            "category": category,
+            "media_kind": classify_media_kind(url, entry_type),
+        }
+        if category == "series":
+            entry.update(extract_series_metadata(title, group, url))
+        entries.append(entry)
+        if progress and len(entries) % 25000 == 0:
+            progress(
+                phase="parsing",
+                message=f"Processando playlist baixada ({len(entries)} itens)...",
+                entry_count=len(entries),
+            )
         pending_title = None
         pending_bandwidth = None
         pending_resolution = None
@@ -597,3 +740,7 @@ def parse_playlist_entries(playlist_text: str, source_url: str = "") -> List[Dic
         pending_group = None
 
     return entries
+
+
+def parse_playlist_entries(playlist_text: str, source_url: str = "") -> List[Dict[str, str]]:
+    return parse_playlist_entries_from_lines(playlist_text.splitlines(), source_url)
