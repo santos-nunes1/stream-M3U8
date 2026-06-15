@@ -62,7 +62,7 @@ services:
     mem_limit: 3072m
     cpus: 1.5
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('PORT', '8000'))), 20); s.sendall(b'GET /readyz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
+      test: ["CMD", "python", "-c", "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('PORT', '8000'))), 20); s.sendall(b'GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"]
       interval: 30s
       timeout: 30s
       retries: 5
@@ -109,7 +109,6 @@ services:
       BOT_DB_PATH: /app/bot-data/orders.sqlite3
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       MERCADO_PAGO_ACCESS_TOKEN: ${MERCADO_PAGO_ACCESS_TOKEN:-}
-      MERCADO_PAGO_PAYER_EMAIL: ${MERCADO_PAGO_PAYER_EMAIL:-contato.vnunes@gmail.com}
       MERCADO_PAGO_WEBHOOK_SECRET: ${MERCADO_PAGO_WEBHOOK_SECRET:-}
       BOT_PUBLIC_BASE_URL: ${BOT_PUBLIC_BASE_URL:-}
       APP_INTERNAL_BASE_URL: http://stream-m3u8:8000

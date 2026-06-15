@@ -1,6 +1,9 @@
 import base64
+import hashlib
+import hmac
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -31,6 +34,8 @@ DEFAULT_PLANS = [
         "allow_adult_content": False,
     },
 ]
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def env_required(name: str) -> str:
@@ -85,6 +90,14 @@ def load_plans() -> List[Dict]:
     return normalized
 
 
+def normalize_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def is_valid_email(value: str) -> bool:
+    return bool(EMAIL_RE.match(normalize_email(value)))
+
+
 class PaymentStore:
     def __init__(self, path: str) -> None:
         self.path = Path(path)
@@ -127,18 +140,133 @@ class PaymentStore:
                     created_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS telegram_customers (
+                    telegram_user_id TEXT PRIMARY KEY,
+                    telegram_chat_id TEXT NOT NULL,
+                    telegram_username TEXT NOT NULL DEFAULT '',
+                    payer_email TEXT NOT NULL,
+                    pending_plan_id TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_orders_payment_id ON orders(payment_id);
                 CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(telegram_user_id, status);
+                CREATE INDEX IF NOT EXISTS idx_orders_user_plan_status ON orders(telegram_user_id, plan_id, status);
                 """
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(orders)").fetchall()}
+            if "payer_email" not in columns:
+                db.execute("ALTER TABLE orders ADD COLUMN payer_email TEXT NOT NULL DEFAULT ''")
+            customer_columns = {row["name"] for row in db.execute("PRAGMA table_info(telegram_customers)").fetchall()}
+            if "pending_plan_id" not in customer_columns:
+                db.execute("ALTER TABLE telegram_customers ADD COLUMN pending_plan_id TEXT NOT NULL DEFAULT ''")
 
-    def create_order(self, telegram_user: Dict, chat_id: str, plan: Dict) -> Dict:
+    def customer_email(self, telegram_user_id: str) -> str:
+        customer = self.customer(telegram_user_id)
+        return str(customer.get("payer_email") or "") if customer else ""
+
+    def customer(self, telegram_user_id: str) -> Optional[Dict]:
+        if not telegram_user_id:
+            return None
+        with self.lock, self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM telegram_customers WHERE telegram_user_id = ?",
+                (telegram_user_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_customer_email(self, telegram_user: Dict, chat_id: str, payer_email: str) -> str:
+        telegram_user_id = str(telegram_user.get("id") or "")
+        payer_email = normalize_email(payer_email)
+        if not telegram_user_id:
+            raise ValueError("Usuario do Telegram invalido")
+        if not is_valid_email(payer_email):
+            raise ValueError("E-mail invalido")
+        now = time.time()
+        payload = {
+            "telegram_user_id": telegram_user_id,
+            "telegram_chat_id": str(chat_id),
+            "telegram_username": str(telegram_user.get("username") or ""),
+            "payer_email": payer_email,
+            "pending_plan_id": "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO telegram_customers (
+                    telegram_user_id, telegram_chat_id, telegram_username, payer_email, pending_plan_id, created_at, updated_at
+                ) VALUES (
+                    :telegram_user_id, :telegram_chat_id, :telegram_username, :payer_email, :pending_plan_id, :created_at, :updated_at
+                )
+                ON CONFLICT(telegram_user_id) DO UPDATE SET
+                    telegram_chat_id = excluded.telegram_chat_id,
+                    telegram_username = excluded.telegram_username,
+                    payer_email = excluded.payer_email,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+        return payer_email
+
+    def save_pending_plan(self, telegram_user: Dict, chat_id: str, plan_id: str) -> None:
+        telegram_user_id = str(telegram_user.get("id") or "")
+        if not telegram_user_id:
+            return
+        now = time.time()
+        payload = {
+            "telegram_user_id": telegram_user_id,
+            "telegram_chat_id": str(chat_id),
+            "telegram_username": str(telegram_user.get("username") or ""),
+            "pending_plan_id": str(plan_id or ""),
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.lock, self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO telegram_customers (
+                    telegram_user_id, telegram_chat_id, telegram_username, payer_email, pending_plan_id, created_at, updated_at
+                ) VALUES (
+                    :telegram_user_id, :telegram_chat_id, :telegram_username, '', :pending_plan_id, :created_at, :updated_at
+                )
+                ON CONFLICT(telegram_user_id) DO UPDATE SET
+                    telegram_chat_id = excluded.telegram_chat_id,
+                    telegram_username = excluded.telegram_username,
+                    pending_plan_id = excluded.pending_plan_id,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+
+    def clear_pending_plan(self, telegram_user_id: str) -> None:
+        if not telegram_user_id:
+            return
+        with self.lock, self._connect() as db:
+            db.execute(
+                "UPDATE telegram_customers SET pending_plan_id = '', updated_at = ? WHERE telegram_user_id = ?",
+                (time.time(), str(telegram_user_id)),
+            )
+
+    def reset_purchase_context(self, telegram_user_id: str) -> None:
+        if not telegram_user_id:
+            return
+        with self.lock, self._connect() as db:
+            db.execute(
+                "UPDATE telegram_customers SET payer_email = '', pending_plan_id = '', updated_at = ? WHERE telegram_user_id = ?",
+                (time.time(), str(telegram_user_id)),
+            )
+
+    def create_order(self, telegram_user: Dict, chat_id: str, plan: Dict, payer_email: str) -> Dict:
         now = time.time()
         order = {
             "id": uuid4().hex,
             "telegram_user_id": str(telegram_user.get("id") or ""),
             "telegram_chat_id": str(chat_id),
             "telegram_username": str(telegram_user.get("username") or ""),
+            "payer_email": normalize_email(payer_email),
             "plan_id": plan["id"],
             "status": "created",
             "payment_id": "",
@@ -154,10 +282,10 @@ class PaymentStore:
             db.execute(
                 """
                 INSERT INTO orders (
-                    id, telegram_user_id, telegram_chat_id, telegram_username, plan_id,
+                    id, telegram_user_id, telegram_chat_id, telegram_username, payer_email, plan_id,
                     status, payment_id, amount, qr_code, access_url, error, created_at, updated_at, approved_at
                 ) VALUES (
-                    :id, :telegram_user_id, :telegram_chat_id, :telegram_username, :plan_id,
+                    :id, :telegram_user_id, :telegram_chat_id, :telegram_username, :payer_email, :plan_id,
                     :status, :payment_id, :amount, :qr_code, :access_url, :error, :created_at, :updated_at, :approved_at
                 )
                 """,
@@ -219,6 +347,68 @@ class TelegramClient:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         self.api("sendMessage", payload)
+
+    def answer_callback_query(self, callback_id: str, text: str = "") -> None:
+        if not callback_id:
+            return
+        payload = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text
+        try:
+            self.api("answerCallbackQuery", payload)
+        except Exception:
+            pass
+
+    def remove_message_reply_markup(self, chat_id: str, message_id) -> None:
+        if not chat_id or not message_id:
+            return
+        try:
+            self.api(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+        except Exception:
+            pass
+
+    def send_video(self, chat_id: str, video_path: str, caption: str = "") -> bool:
+        if not video_path:
+            return False
+        path = Path(video_path)
+        if not path.is_file():
+            return False
+        try:
+            boundary = f"----stream-m3u8-{uuid4().hex}"
+            fields = [
+                (b"chat_id", str(chat_id).encode("utf-8")),
+                (b"supports_streaming", b"true"),
+            ]
+            if caption:
+                fields.append((b"caption", caption.encode("utf-8")))
+
+            body = bytearray()
+            for key, value in fields:
+                body.extend(f"--{boundary}\r\n".encode("utf-8"))
+                body.extend(b'Content-Disposition: form-data; name="' + key + b'"\r\n\r\n')
+                body.extend(value + b"\r\n")
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(b'Content-Disposition: form-data; name="video"; filename="' + path.name.encode("utf-8") + b'"\r\n')
+            body.extend(b"Content-Type: video/mp4\r\n\r\n")
+            body.extend(path.read_bytes() + b"\r\n")
+            body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+            request = urllib.request.Request(
+                f"{self.base_url}/sendVideo",
+                data=bytes(body),
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            urllib.request.urlopen(request, timeout=60).read()
+            return True
+        except Exception:
+            return False
 
     def send_pix_qr(self, chat_id: str, qr_code: str, qr_code_base64: str = "") -> None:
         if qr_code_base64:
@@ -290,18 +480,26 @@ class BotApp:
         self.plans = {plan["id"]: plan for plan in load_plans()}
         public_base = os.getenv("BOT_PUBLIC_BASE_URL", "").rstrip("/")
         webhook_secret = os.getenv("MERCADO_PAGO_WEBHOOK_SECRET", "").strip()
-        notification_url = f"{public_base}/webhooks/mercadopago/{urllib.parse.quote(webhook_secret, safe='')}" if public_base and webhook_secret else ""
+        notification_url = f"{public_base}/webhooks/mercadopago" if public_base else ""
         self.mercado_pago = MercadoPagoClient(env_required("MERCADO_PAGO_ACCESS_TOKEN"), notification_url=notification_url)
         self.app_internal_base_url = os.getenv("APP_INTERNAL_BASE_URL", "http://stream-m3u8:8000").rstrip("/")
         self.app_public_base_url = os.getenv("APP_PUBLIC_BASE_URL", "").rstrip("/")
         self.admin_token = env_required("AUTH_ADMIN_TOKEN")
         self.webhook_secret = webhook_secret
-        self.mercado_pago_payer_email = os.getenv("MERCADO_PAGO_PAYER_EMAIL", "contato.vnunes@gmail.com").strip()
+        self.demo_video_path = os.getenv("BOT_DEMO_VIDEO_PATH", "/app/bot/assets/demo.mp4").strip()
         self.polling_offset = 0
 
     def plan_keyboard(self) -> Dict:
         return {
             "inline_keyboard": [
+                [
+                    {
+                        "text": "Me envie um Demo",
+                        "callback_data": "demo:video",
+                    }
+                ],
+            ]
+            + [
                 [
                     {
                         "text": self.plan_label(plan),
@@ -317,37 +515,112 @@ class BotApp:
             return f"{plan['name']} - Gratuito"
         return f"{plan['name']} - R$ {plan['price']:.2f}".replace(".", ",")
 
+    def demo_keyboard(self) -> Dict:
+        return {"inline_keyboard": [[{"text": "Me envie um Demo", "callback_data": "demo:video"}]]}
+
+    def ask_for_email(self, chat_id: str) -> None:
+        self.telegram.send_message(
+            chat_id,
+            "Agora envie seu e-mail para cadastro.\n\nEle sera usado para gerar o cadastro no app.",
+        )
+
+    def send_plan_intro(self, chat_id: str) -> None:
+        self.telegram.send_message(
+            chat_id,
+            "Escolha um plano para continuar.",
+            reply_markup=self.plan_keyboard(),
+        )
+
+    def send_plan_options(self, chat_id: str, payer_email: str) -> None:
+        self.telegram.send_message(
+            chat_id,
+            f"E-mail cadastrado: <b>{payer_email}</b>\n\nEscolha um plano.",
+            reply_markup=self.plan_keyboard(),
+        )
+
+    def start_purchase_flow(self, chat_id: str, telegram_user_id: str) -> None:
+        self.store.reset_purchase_context(telegram_user_id)
+        self.send_plan_intro(chat_id)
+
     def handle_update(self, update: Dict) -> None:
         if "message" in update:
             message = update["message"]
             text = str(message.get("text") or "")
             chat_id = str(message.get("chat", {}).get("id") or "")
+            telegram_user = message.get("from") or {}
+            telegram_user_id = str(telegram_user.get("id") or "")
             if text.startswith("/start") or text.startswith("/planos"):
-                self.telegram.send_message(
-                    chat_id,
-                    "Escolha um plano. Depois do Pix aprovado, envio seu link de acesso automaticamente.",
-                    reply_markup=self.plan_keyboard(),
-                )
+                self.start_purchase_flow(chat_id, telegram_user_id)
                 return
-            self.telegram.send_message(chat_id, "Use /start para ver os planos disponiveis.", reply_markup=self.plan_keyboard())
+            if is_valid_email(text):
+                customer = self.store.customer(telegram_user_id) or {}
+                pending_plan_id = str(customer.get("pending_plan_id") or "")
+                if not pending_plan_id:
+                    self.telegram.send_message(
+                        chat_id,
+                        "Escolha um plano.",
+                        reply_markup=self.plan_keyboard(),
+                    )
+                    return
+                payer_email = self.store.save_customer_email(telegram_user, chat_id, text)
+                self.telegram.send_message(chat_id, f"E-mail cadastrado: <b>{payer_email}</b>")
+                self.process_plan_selection(pending_plan_id, chat_id, telegram_user)
+                return
+            customer = self.store.customer(telegram_user_id) or {}
+            if customer.get("pending_plan_id"):
+                self.telegram.send_message(chat_id, "Envie um e-mail valido para continuar. Exemplo: nome@email.com")
+            else:
+                self.telegram.send_message(chat_id, "Use os botoes para escolher um plano primeiro.", reply_markup=self.plan_keyboard())
             return
 
         callback = update.get("callback_query") or {}
         data = str(callback.get("data") or "")
+        callback_id = str(callback.get("id") or "")
+        if callback_id and not self.store.mark_event_seen(f"telegram_callback:{callback_id}"):
+            self.telegram.answer_callback_query(callback_id, "Essa solicitacao ja foi processada.")
+            return
+        if data == "demo:video":
+            self.telegram.answer_callback_query(callback_id, "Enviando demo...")
+            message = callback.get("message") or {}
+            chat_id = str(message.get("chat", {}).get("id") or "")
+            sent = self.telegram.send_video(
+                chat_id,
+                self.demo_video_path,
+                "Aqui está uma demo de como utilizar o app.",
+            )
+            if not sent:
+                self.telegram.send_message(chat_id, "Nao consegui enviar a demo agora. Tente novamente em alguns instantes.")
+            return
         if data.startswith("plan:"):
+            self.telegram.answer_callback_query(callback_id, "Processando plano...")
             plan_id = data.split(":", 1)[1]
             self.create_order_from_callback(callback, plan_id)
 
     def create_order_from_callback(self, callback: Dict, plan_id: str) -> None:
-        plan = self.plans.get(plan_id)
         message = callback.get("message") or {}
         chat_id = str(message.get("chat", {}).get("id") or "")
+        message_id = message.get("message_id")
         telegram_user = callback.get("from") or {}
+        self.process_plan_selection(plan_id, chat_id, telegram_user, message_id)
+
+    def process_plan_selection(self, plan_id: str, chat_id: str, telegram_user: Dict, message_id=None) -> None:
+        plan = self.plans.get(plan_id)
+        telegram_user_id = str(telegram_user.get("id") or "")
         if not plan:
             self.telegram.send_message(chat_id, "Plano invalido. Use /start para tentar novamente.")
             return
+        payer_email = self.store.customer_email(telegram_user_id)
+        if not payer_email:
+            self.store.save_pending_plan(telegram_user, chat_id, plan_id)
+            if message_id:
+                self.telegram.remove_message_reply_markup(chat_id, message_id)
+            self.telegram.send_message(chat_id, "Plano selecionado. Agora envie seu e-mail para cadastrar seu acesso.")
+            return
 
-        order = self.store.create_order(telegram_user, chat_id, plan)
+        if message_id:
+            self.telegram.remove_message_reply_markup(chat_id, message_id)
+        self.store.clear_pending_plan(telegram_user_id)
+        order = self.store.create_order(telegram_user, chat_id, plan, payer_email)
         if float(plan["price"]) <= 0:
             try:
                 access_url = self.issue_access(order, plan)
@@ -361,7 +634,7 @@ class BotApp:
                 self.telegram.send_message(chat_id, f"Nao foi possivel gerar o teste gratuito agora: {exc}")
             return
         try:
-            payment = self.mercado_pago.create_pix_payment(order, plan, self.mercado_pago_payer_email)
+            payment = self.mercado_pago.create_pix_payment(order, plan, order["payer_email"])
             payment_id = str(payment.get("id") or "")
             transaction_data = (payment.get("point_of_interaction") or {}).get("transaction_data") or {}
             qr_code = str(transaction_data.get("qr_code") or "")
@@ -408,11 +681,29 @@ class BotApp:
                 "Pagamento aprovado, mas houve erro ao gerar o acesso. O suporte ja pode verificar o pedido.",
             )
 
+    def app_admin_request(self, path: str, payload: Optional[Dict] = None, method: Optional[str] = None) -> Dict:
+        return json_request(
+            f"{self.app_internal_base_url}{path}",
+            payload=payload,
+            headers={"X-Admin-Token": self.admin_token},
+            method=method,
+        )
+
+    def access_url_for_user(self, user: Dict, data: Optional[Dict] = None) -> str:
+        access_hash = user.get("access_hash") or ""
+        if self.app_public_base_url and access_hash:
+            return f"{self.app_public_base_url}/access/{urllib.parse.quote(access_hash, safe='')}"
+        data = data or {}
+        return user.get("access_url") or data.get("access_url") or ""
+
     def issue_access(self, order: Dict, plan: Dict) -> str:
         username = order.get("telegram_username") or order["telegram_user_id"]
+        payer_email = normalize_email(order.get("payer_email") or "")
+        if not payer_email:
+            payer_email = f"telegram-{order['telegram_user_id']}-{order['id'][:8]}@stream.local"
         payload = {
             "name": f"Telegram {username}",
-            "email": f"telegram-{order['telegram_user_id']}-{order['id'][:8]}@stream.local",
+            "email": payer_email,
             "max_screens": plan["max_screens"],
             "access_expires_in_days": plan["days"],
             "allow_adult_content": plan["allow_adult_content"],
@@ -421,16 +712,31 @@ class BotApp:
             "catalog_featured_sections": plan.get("catalog_featured_sections") or [],
             "active": True,
         }
-        data = json_request(
-            f"{self.app_internal_base_url}/api/admin/users",
-            payload=payload,
-            headers={"X-Admin-Token": self.admin_token},
-        )
+        try:
+            data = self.app_admin_request("/api/admin/users", payload=payload)
+        except RuntimeError as exc:
+            if "HTTP 409" not in str(exc):
+                raise
+            users = self.app_admin_request("/api/admin/users", method="GET").get("users") or []
+            existing_user = next((user for user in users if normalize_email(user.get("email") or "") == payer_email), None)
+            if not existing_user:
+                raise
+            user_id = urllib.parse.quote(str(existing_user.get("id") or ""), safe="")
+            update_payload = {
+                "email": payer_email,
+                "name": payload["name"],
+                "max_screens": payload["max_screens"],
+                "allow_adult_content": payload["allow_adult_content"],
+                "active": True,
+                "access_expires_at": time.time() + max(int(plan["days"] or 1), 1) * 24 * 60 * 60,
+                "catalog_access_mode": payload["catalog_access_mode"],
+                "catalog_allowed_terms": payload["catalog_allowed_terms"],
+                "catalog_featured_sections": payload["catalog_featured_sections"],
+            }
+            self.app_admin_request(f"/api/admin/users/{user_id}", payload=update_payload, method="PUT")
+            data = self.app_admin_request(f"/api/admin/users/{user_id}/rotate-link", payload={}, method="POST")
         user = data.get("user") or {}
-        access_hash = user.get("access_hash") or ""
-        if self.app_public_base_url and access_hash:
-            return f"{self.app_public_base_url}/access/{urllib.parse.quote(access_hash, safe='')}"
-        return user.get("access_url") or data.get("access_url") or ""
+        return self.access_url_for_user(user, data)
 
     def poll_forever(self) -> None:
         while True:
@@ -459,8 +765,48 @@ def payment_id_from_payload(path: str, payload: Dict) -> str:
     return value
 
 
+def parse_signature_header(value: str) -> Dict[str, str]:
+    parts = {}
+    for item in value.split(","):
+        key, separator, part_value = item.strip().partition("=")
+        if separator:
+            parts[key.strip()] = part_value.strip()
+    return parts
+
+
+def signature_data_id_from_path(path: str) -> str:
+    params = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+    data_id = str((params.get("data.id") or [""])[0])
+    return data_id.lower() if data_id.isalnum() else data_id
+
+
+def is_valid_mercado_pago_signature(path: str, headers, secret: str) -> bool:
+    if not secret:
+        return True
+    signature = parse_signature_header(headers.get("x-signature", ""))
+    timestamp = signature.get("ts", "")
+    received_signature = signature.get("v1", "")
+    request_id = headers.get("x-request-id", "")
+    if not timestamp or not received_signature or not request_id:
+        return False
+
+    manifest = ""
+    data_id = signature_data_id_from_path(path)
+    if data_id:
+        manifest += f"id:{data_id};"
+    manifest += f"request-id:{request_id};ts:{timestamp};"
+    expected_signature = hmac.new(secret.encode("utf-8"), manifest.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected_signature, received_signature)
+
+
 def make_handler(app: BotApp):
     class BotWebhookHandler(BaseHTTPRequestHandler):
+        def handle(self):
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
         def do_GET(self):
             if self.path == "/healthz":
                 body = b'{"status":"ok"}'
@@ -474,12 +820,10 @@ def make_handler(app: BotApp):
 
         def do_POST(self):
             parsed = urllib.parse.urlsplit(self.path)
-            prefix = "/webhooks/mercadopago/"
-            if not parsed.path.startswith(prefix):
+            if parsed.path.rstrip("/") != "/webhooks/mercadopago":
                 self.send_error(404)
                 return
-            provided_secret = urllib.parse.unquote(parsed.path[len(prefix) :])
-            if app.webhook_secret and provided_secret != app.webhook_secret:
+            if not is_valid_mercado_pago_signature(self.path, self.headers, app.webhook_secret):
                 self.send_error(403)
                 return
             length = int(self.headers.get("Content-Length") or 0)

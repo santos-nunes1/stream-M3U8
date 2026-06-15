@@ -194,7 +194,7 @@ Esse modo é útil para testes rápidos, mas não é a melhor opção para strea
 
 ## Robô Telegram com Pix
 
-O perfil `bot` sobe um worker separado que conversa com usuários no Telegram, cria cobranças Pix no Mercado Pago e, quando o pagamento é aprovado por webhook, cria o usuário pela API administrativa da aplicação.
+O perfil `bot` sobe um worker separado que conversa com usuários no Telegram, pede o e-mail do comprador, cria cobranças Pix no Mercado Pago e, quando o pagamento é aprovado por webhook, cria ou atualiza o usuário pela API administrativa da aplicação usando esse mesmo e-mail.
 
 Variáveis mínimas:
 
@@ -213,7 +213,7 @@ Suba o bot:
 docker compose --profile bot up -d --build
 ```
 
-O worker expõe `POST /webhooks/mercadopago/<MERCADO_PAGO_WEBHOOK_SECRET>` na porta `8081`. Configure essa URL no painel do Mercado Pago. Para testes rápidos, o perfil `bot-public` cria um túnel temporário para o webhook:
+O worker expõe `POST /webhooks/mercadopago` na porta `8081`. Configure a URL pública `https://seu-dominio-do-bot/webhooks/mercadopago` no painel do Mercado Pago e use o valor de `MERCADO_PAGO_WEBHOOK_SECRET` como assinatura secreta da integração. O webhook valida os headers `x-signature` e `x-request-id` enviados pelo Mercado Pago. Para testes rápidos, o perfil `bot-public` cria um túnel temporário para o webhook:
 
 ```bash
 docker compose --profile bot-public up -d --build
@@ -226,7 +226,7 @@ Planos podem ser configurados por `PLANS_JSON`. Exemplo:
 PLANS_JSON='[{"id":"basic_30","name":"30 dias","price":29.90,"days":30,"max_screens":1,"allow_adult_content":false}]'
 ```
 
-Por padrão, o bot usa planos de 30 dias para 1 ou 2 telas. O banco de pedidos fica no volume `stream_m3u8_bot_data`, separado do banco principal de usuários.
+Por padrão, o bot usa planos de 30 dias para 1 ou 2 telas. O e-mail informado pelo usuário no Telegram é salvo no banco do bot, enviado como `payer.email` ao Mercado Pago e usado no cadastro do acesso. O banco de pedidos fica no volume `stream_m3u8_bot_data`, separado do banco principal de usuários.
 
 ## Variáveis de Ambiente
 
@@ -251,7 +251,7 @@ Por padrão, o bot usa planos de 30 dias para 1 ou 2 telas. O banco de pedidos f
 - `AUTH_REGISTRATION_TOKEN`: token legado; também é aceito como fallback administrativo quando `AUTH_ADMIN_TOKEN` não estiver configurado.
 - `TELEGRAM_BOT_TOKEN`: token do BotFather para o worker Telegram.
 - `MERCADO_PAGO_ACCESS_TOKEN`: token de acesso do Mercado Pago usado para criar e consultar cobranças Pix.
-- `MERCADO_PAGO_WEBHOOK_SECRET`: segredo usado no caminho do webhook do Mercado Pago.
+- `MERCADO_PAGO_WEBHOOK_SECRET`: assinatura secreta usada para validar os webhooks do Mercado Pago via `x-signature`.
 - `BOT_PUBLIC_BASE_URL`: URL pública HTTPS que aponta para o worker do bot.
 - `APP_PUBLIC_BASE_URL`: URL pública da aplicação enviada aos usuários nos links de acesso.
 - `PLANS_JSON`: lista JSON de planos vendidos pelo bot.

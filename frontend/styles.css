@@ -181,7 +181,21 @@ label {
 }
 
 .telegram-access-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  justify-content: center;
+  margin: 0.25rem auto 0.75rem;
   text-align: center;
+}
+
+.telegram-access-actions[hidden] {
+  display: none;
+}
+
+body:not([data-auth-state="login"]) [data-auth-guest] {
+  display: none !important;
 }
 
 .telegram-access-link {
@@ -190,10 +204,11 @@ label {
   border-radius: 999px;
   color: var(--muted-strong);
   display: inline-block;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   font-weight: 700;
-  padding: 0.5rem 0.85rem;
+  padding: 0.44rem 0.68rem;
   text-decoration: none;
+  white-space: nowrap;
   transition:
     background 0.2s ease,
     border-color 0.2s ease,
@@ -208,6 +223,13 @@ label {
   box-shadow: 0 10px 24px rgba(247, 193, 92, 0.12);
   outline: none;
   transform: translateY(-1px);
+}
+
+.demo-access-link {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.86;
+  padding: 0.4rem 0.62rem;
 }
 
 .auth-message {
@@ -467,6 +489,7 @@ label {
 .top-bar {
   align-items: center;
   display: flex;
+  gap: 0.75rem;
   justify-content: space-between;
   margin-bottom: 0.6rem;
   overflow: hidden;

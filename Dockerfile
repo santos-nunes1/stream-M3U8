@@ -46,7 +46,7 @@ RUN mkdir -p /tmp/stream-buffer /app/data /app/bot-data \
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=5 \
-    CMD python -c "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('PORT', '8000'))), 20); s.sendall(b'GET /readyz HTTP/1.0\r\nHost: localhost\r\n\r\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"
+    CMD python -c "import os, socket; s=socket.create_connection(('127.0.0.1', int(os.getenv('PORT', '8000'))), 20); s.sendall(b'GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n'); data=s.recv(128); s.close(); raise SystemExit(0 if b' 200 ' in data else 1)"
 
 ENTRYPOINT ["python", "/app/docker-entrypoint.py"]
 CMD ["python", "-m", "backend.app"]

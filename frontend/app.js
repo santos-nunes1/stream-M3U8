@@ -1,6 +1,7 @@
 const els = {
   authPanel: document.querySelector("#auth-panel"),
   authRequired: document.querySelectorAll("[data-auth-required]"),
+  authGuest: document.querySelectorAll("[data-auth-guest]"),
   loginForm: document.querySelector("#login-form"),
   accessHash: document.querySelector("#access-hash"),
   authMessage: document.querySelector("#auth-message"),
@@ -91,6 +92,10 @@ let dailyGameShortcutEntries = [];
 let worldCupCatalogRequested = false;
 let worldCupShortcutEntries = [];
 let realityShortcutEntries = [];
+let dailyGameShortcutLoadPromise = null;
+let dailyGameShortcutCacheKey = "";
+let realityShortcutLoadPromise = null;
+let realityShortcutCacheKey = "";
 let playlistId = "";
 let playlistPayload = null;
 let playlistEndpoint = "/api/playlist/parse";
@@ -110,7 +115,7 @@ let pendingExternalLaunch = null;
 const PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 500;
 const SEARCH_DEBOUNCE_MS = 250;
-const MIN_SEARCH_QUERY_LENGTH = 2;
+const MIN_SEARCH_QUERY_LENGTH = 3;
 const PLAYLIST_LOADING_POLL_MS = 3000;
 const FAVORITES_STORAGE_KEY = "streamM3U8UserFavorites";
 const WATCHED_STORAGE_KEY = "streamM3U8WatchedEpisodes";
@@ -286,11 +291,15 @@ function setAuthMessage(message, type = "") {
 }
 
 function showLogin() {
+  document.body.dataset.authState = "login";
   currentUser = null;
   appLoaded = false;
   trialCatalogLoadPromise = null;
   stopHeartbeat();
   els.authPanel.hidden = false;
+  els.authGuest.forEach((element) => {
+    element.hidden = false;
+  });
   els.authRequired.forEach((element) => {
     element.hidden = true;
   });
@@ -301,8 +310,12 @@ function showLogin() {
 }
 
 function showAuthenticatedApp(user) {
+  document.body.dataset.authState = "authenticated";
   currentUser = user;
   els.authPanel.hidden = true;
+  els.authGuest.forEach((element) => {
+    element.hidden = true;
+  });
   els.authRequired.forEach((element) => {
     element.hidden = false;
   });
@@ -691,13 +704,82 @@ function coverCandidates(entries, primary = "", collectionTitle = "") {
   ));
 }
 
-function imageWithFallback({ className, src, candidates = [], placeholder, alt = "" }) {
+function svgCoverDataUrl(title, subtitle = "") {
+  const label = String(title || "?").slice(0, 42);
+  const detail = String(subtitle || "Stream Corsário").slice(0, 28);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="320" height="460" viewBox="0 0 320 460">
+      <defs>
+        <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stop-color="#102033"/>
+          <stop offset="0.55" stop-color="#07111f"/>
+          <stop offset="1" stop-color="#2d1f0a"/>
+        </linearGradient>
+        <radialGradient id="glow" cx="72%" cy="18%" r="70%">
+          <stop offset="0" stop-color="#f7c15c" stop-opacity="0.42"/>
+          <stop offset="1" stop-color="#f7c15c" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="320" height="460" rx="32" fill="url(#bg)"/>
+      <rect width="320" height="460" rx="32" fill="url(#glow)"/>
+      <circle cx="246" cy="72" r="42" fill="#06b6d4" opacity="0.18"/>
+      <path d="M42 336c64-32 128-32 236 0v74H42z" fill="#f7c15c" opacity="0.12"/>
+      <text x="32" y="214" fill="#fff7e6" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800">
+        ${escapeHtml(label)}
+      </text>
+      <text x="32" y="252" fill="#f7c15c" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700">
+        ${escapeHtml(detail)}
+      </text>
+    </svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+const CURATED_COVER_SOURCES = [
+  {
+    match: /record|r7/,
+    covers: [
+      "https://www.google.com/s2/favicons?domain=record.r7.com&sz=256",
+      "https://www.google.com/s2/favicons?domain=r7.com&sz=256",
+    ],
+    fallbackTitle: "Record",
+    fallbackSubtitle: "TV liberada",
+  },
+  {
+    match: /game of thrones|guerra dos tronos/,
+    covers: [
+      "https://image.tmdb.org/t/p/w500/1XS1oqL89opfnbLl8WnZY1O1uJx.jpg",
+      "https://image.tmdb.org/t/p/w500/u3bZgnGQ9T01sWNhyveQz0wH0Hl.jpg",
+    ],
+    fallbackTitle: "Game of Thrones",
+    fallbackSubtitle: "HBO MAX",
+  },
+  {
+    match: /batman|cavaleiro das trevas|dark knight/,
+    covers: [
+      "https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg",
+      "https://image.tmdb.org/t/p/w500/1hRoyzDtpgMU7Dz4JF22RANzQO7.jpg",
+    ],
+    fallbackTitle: "Batman",
+    fallbackSubtitle: "Filme liberado",
+  },
+];
+
+function curatedCoverSources(title = "") {
+  const normalized = normalizeCatalogText(title);
+  const match = CURATED_COVER_SOURCES.find((item) => item.match.test(normalized));
+  if (!match) {
+    return [];
+  }
+  return [...match.covers, svgCoverDataUrl(match.fallbackTitle, match.fallbackSubtitle)];
+}
+
+function imageWithFallback({ className, src, candidates = [], placeholder, alt = "", fallbackLabel = "?" }) {
   const sources = [src, ...candidates].filter(Boolean);
   const uniqueSources = Array.from(new Set(sources));
   if (!uniqueSources.length) {
     return placeholder;
   }
-  return `<img class="${className}" src="${escapeHtml(uniqueSources[0])}" alt="${escapeHtml(alt)}" loading="lazy" referrerpolicy="no-referrer" data-fallback-logos="${escapeHtml(JSON.stringify(uniqueSources.slice(1)))}" />`;
+  return `<img class="${className}" src="${escapeHtml(uniqueSources[0])}" alt="${escapeHtml(alt)}" loading="lazy" referrerpolicy="no-referrer" data-fallback-label="${escapeHtml(fallbackLabel)}" data-fallback-logos="${escapeHtml(JSON.stringify(uniqueSources.slice(1)))}" />`;
 }
 
 function bindImageFallbacks(root) {
@@ -712,8 +794,8 @@ function bindImageFallbacks(root) {
       const next = fallbacks.shift();
       if (!next) {
         image.replaceWith(Object.assign(document.createElement("div"), {
-          className: image.className,
-          textContent: "?",
+          className: `${image.className} placeholder`.trim(),
+          textContent: image.dataset.fallbackLabel || "?",
         }));
         return;
       }
@@ -1598,7 +1680,8 @@ async function prepareExternalLaunchFromModal() {
   try {
     await prepareExternalLaunch(activeStreamId, activeEntry);
     setStatusModalExternalButton(`Abrir ${playerLabel}`, false);
-    setStatus(`Link privado pronto para abrir no ${playerLabel}.`, "ok");
+    const linkMode = currentExternalPlayer() === "vlc" && getClientPlatform() === "android" ? "Link estavel" : "Link direto";
+    setStatus(`${linkMode} pronto para abrir no ${playerLabel}.`, "ok");
   } catch (error) {
     setStatusModalExternalButton("Tentar abrir player externo", false);
     setStatus(error.message, "error");
@@ -1616,7 +1699,8 @@ async function prepareExternalLaunch(streamUrl, entry = null) {
     throw new Error("Nao foi possivel gerar o link do player externo.");
   }
 
-  const launch = buildExternalPlayerLaunchTarget(response.stream_url, player, response.launch_urls || [], response.mime_type || "");
+  const externalStreamUrl = externalPlayerStreamUrl(response, player);
+  const launch = buildExternalPlayerLaunchTarget(externalStreamUrl, player, response.launch_urls || [], response.mime_type || "");
   if (launch.unsupportedMessage) {
     if (launch.fallbackUrl) {
       window.location.href = launch.fallbackUrl;
@@ -1633,6 +1717,13 @@ async function prepareExternalLaunch(streamUrl, entry = null) {
 
   pendingExternalLaunch = { launch, browserFallback, playerLabel };
   return pendingExternalLaunch;
+}
+
+function externalPlayerStreamUrl(response, player) {
+  if (player === "vlc" && getClientPlatform() === "android" && response.proxy_stream_url) {
+    return response.proxy_stream_url;
+  }
+  return response.stream_url;
 }
 
 function launchPreparedExternalPlayer() {
@@ -1846,13 +1937,15 @@ async function loadSavedPlaylistOnStartup() {
   logUserAction("Carregando playlist salva automaticamente");
   startupPlaylistLoadPromise = (async () => {
     try {
-      showHubLoading();
+      hideHubLoading();
+      renderInitialCollapsedView();
+      setStatus("Carregando catalogo em segundo plano. Pesquise um titulo em instantes.", "ok");
       playlistPayload = {};
       playlistEndpoint = "/api/playlist/preloaded";
-      const data = await loadPreloadedPlaylistPage(currentPlaylistFilters({ limit: PAGE_SIZE, offset: 0 }));
+      const data = await loadPreloadedPlaylistPage(currentPlaylistFilters({ limit: PAGE_SIZE, offset: 0 }), { showOverlay: false });
       applyPlaylistData(data);
       renderInitialCollapsedView();
-      setStatus("Escolha uma categoria ou pesquise um titulo.", "ok");
+      setStatus("Digite um titulo para buscar no catalogo.", "ok");
       hideHubLoading();
       hideStatusModal();
     } catch (error) {
@@ -1906,17 +1999,21 @@ async function loadTrialCatalog() {
   return trialCatalogLoadPromise;
 }
 
-async function loadPreloadedPlaylistPage(payload) {
+async function loadPreloadedPlaylistPage(payload, { showOverlay = true } = {}) {
   while (true) {
     const data = await postJson("/api/playlist/preloaded", payload);
     if (data.status !== "loading") {
-      hideHubLoading();
+      if (showOverlay) {
+        hideHubLoading();
+      }
       return data;
     }
 
     const message = data.message || "Carregando playlist salva...";
-    showHubLoading();
-    setHubLoadingPhase(data.phase, data.status);
+    if (showOverlay) {
+      showHubLoading();
+      setHubLoadingPhase(data.phase, data.status);
+    }
     setPlaylistLoading(message);
     await delay(PLAYLIST_LOADING_POLL_MS);
   }
@@ -1953,9 +2050,18 @@ function renderTrialCatalog(sections) {
     block.className = "trial-section collapsed";
     const displayCount = (section.groups || []).length || (section.entries || []).length;
     const countLabel = (section.groups || []).length ? "canal(is)" : "item(ns)";
-    const cover = section.cover_url
-      ? `<img class="trial-cover" src="${escapeHtml(section.cover_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
-      : `<div class="trial-cover placeholder">${escapeHtml((section.title || "?").slice(0, 1))}</div>`;
+    const sectionCoverCandidates = [
+      ...curatedCoverSources(section.title || ""),
+      ...curatedCoverSources((section.entries || []).map((entry) => entry.title || "").join(" ")),
+      ...curatedCoverSources((section.groups || []).map((group) => group.title || "").join(" ")),
+    ];
+    const cover = imageWithFallback({
+      className: "trial-cover",
+      src: section.cover_url,
+      candidates: sectionCoverCandidates,
+      placeholder: `<div class="trial-cover placeholder">${escapeHtml((section.title || "?").slice(0, 1))}</div>`,
+      fallbackLabel: (section.title || "?").slice(0, 1),
+    });
     block.innerHTML = `
       <button class="trial-section-header" type="button" aria-expanded="false">
         ${cover}
@@ -2074,9 +2180,13 @@ function createTrialGroupElement(group) {
   const groupCard = document.createElement("article");
   groupCard.className = "trial-group-card collapsed";
   const logoUrl = trialGroupLogoUrl(group);
-  const cover = logoUrl
-    ? `<img class="trial-group-cover" src="${escapeHtml(logoUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
-    : `<div class="trial-group-cover placeholder">${escapeHtml((group.title || "?").slice(0, 1))}</div>`;
+  const cover = imageWithFallback({
+    className: "trial-group-cover",
+    src: logoUrl,
+    candidates: curatedCoverSources(group.title || ""),
+    placeholder: `<div class="trial-group-cover placeholder">${escapeHtml((group.title || "?").slice(0, 1))}</div>`,
+    fallbackLabel: (group.title || "?").slice(0, 1),
+  });
   groupCard.innerHTML = `
     <button class="trial-group-header" type="button" aria-expanded="false">
       ${cover}
@@ -2234,6 +2344,14 @@ async function fetchPlaylistPage({ reset = true } = {}) {
 
   const requestSeq = ++playlistRequestSeq;
   const filters = currentPlaylistFilters();
+  if (!shouldShowPlaylistResults()) {
+    if (playlistFetchController) {
+      playlistFetchController.abort();
+    }
+    renderInitialCollapsedView();
+    setStatus("Digite um titulo para buscar no catalogo.");
+    return;
+  }
   if (playlistFetchController) {
     playlistFetchController.abort();
   }
@@ -2367,7 +2485,7 @@ function dailyGameShortcutLabel(entry) {
 function isFootballGameShortcut(entry) {
   const text = dailyGameShortcutLabel(entry);
   const hasTime = /\b(?:[01]?\d|2[0-3])[:h][0-5]\d\b/.test(text);
-  const hasTeams = /\s(?:x|vs\.?|versus)\s/i.test(text);
+  const hasTeams = /\b[\p{L}\d .'-]{2,}\s(?:x|vs\.?|versus)\s[\p{L}\d .'-]{2,}\b/iu.test(text);
   return hasTime && hasTeams;
 }
 
@@ -2383,22 +2501,46 @@ const NATIONAL_TEAM_HINTS = [
   "suica", "suecia", "tchequia", "tunisia", "turquia", "uruguai", "uzbequistao",
 ];
 
+const WORLD_CUP_2026_TEAM_ALIASES = [
+  "africa do sul", "alemanha", "algeria", "argelia", "argentina", "arabia saudita", "australia", "austria",
+  "belgica", "belgium", "bosnia", "bosnia e herzegovina", "brasil", "brazil", "cabo verde", "canada",
+  "cape verde", "catar", "colombia", "coreia do sul", "costa do marfim", "croacia", "croatia",
+  "curacao", "czech republic", "czechia", "dr congo", "ecuador", "egito", "egypt", "england",
+  "equador", "escocia", "espanha", "estados unidos", "eua", "franca", "france", "gana", "ghana",
+  "haiti", "holanda", "inglaterra", "ira", "iran", "iraq", "iraque", "ivory coast", "japao", "japan",
+  "jordania", "jordan", "marrocos", "mexico", "morocco", "netherlands", "noruega", "nova zelandia",
+  "paises baixos", "panama", "paraguai", "portugal", "qatar", "rd congo", "republica democratica do congo",
+  "republica tcheca", "scotland", "senegal", "south africa", "south korea", "spain", "suica", "suecia",
+  "sweden", "switzerland", "tchequia", "tunisia", "turquia", "turkey", "uruguai", "uruguay", "usa",
+  "uzbequistao", "uzbekistan",
+];
+
 const CLUB_COMPETITION_HINTS = [
   "brasileirao", "serie a", "serie b", "libertadores", "sul americana", "champions", "premier league", "la liga",
   "bundesliga", "calcio", "mls", "nba", "ufc", "combate", "tenis", "volei", "clubes", "sub 20",
 ];
 
+function worldCupTeamMatchCount(titleText) {
+  const matched = new Set();
+  WORLD_CUP_2026_TEAM_ALIASES.forEach((team) => {
+    const pattern = new RegExp(`\\b${team.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (pattern.test(titleText)) {
+      matched.add(team);
+    }
+  });
+  return matched.size;
+}
+
 function isNationalTeamGame(entry) {
-  const text = normalizeCatalogText(`${entry.title || ""} ${entry.group || ""}`);
+  const titleText = normalizeCatalogText(entry.title || "");
+  const fullText = normalizeCatalogText(`${entry.title || ""} ${entry.group || ""}`);
   if (!isFootballGameShortcut(entry)) {
     return false;
   }
-  if (CLUB_COMPETITION_HINTS.some((hint) => text.includes(hint))) {
+  if (CLUB_COMPETITION_HINTS.some((hint) => fullText.includes(hint))) {
     return false;
   }
-  const hasNationalTeam = NATIONAL_TEAM_HINTS.some((team) => text.includes(team));
-  const hasInternationalContext = /amistoso|selecao|selecoes|copa do mundo|eliminatoria|nations league|euro|africana|concacaf|conmebol/.test(text);
-  return hasNationalTeam || hasInternationalContext;
+  return worldCupTeamMatchCount(titleText) >= 2;
 }
 
 function isEntryPlayable(entry) {
@@ -2476,20 +2618,31 @@ async function loadDailyGameShortcuts() {
   if (!playlistId && !playlistPayload) {
     return;
   }
-  try {
-    const data = await postJson(playlistEndpoint, {
+  const cacheKey = `${playlistEndpoint}:${playlistId || "payload"}:${authToken ? "auth" : "guest"}`;
+  if (dailyGameShortcutCacheKey === cacheKey && (dailyGameShortcutEntries.length || worldCupShortcutEntries.length)) {
+    renderDailyGameQuickLinks();
+    renderWorldCupQuickLinks();
+    return;
+  }
+  if (dailyGameShortcutLoadPromise) {
+    return dailyGameShortcutLoadPromise;
+  }
+  dailyGameShortcutLoadPromise = (async () => {
+    const basePayload = {
       ...(playlistPayload && playlistEndpoint !== "/api/playlist/preloaded" ? playlistPayload : {}),
       playlist_id: playlistId,
-      category: "daily_games",
       group: "",
       query: "",
       offset: 0,
       limit: 120,
-    });
-    const seen = new Set();
-    const footballEntries = (data.entries || [])
-      .filter(isFootballGameShortcut)
-      .filter((entry) => {
+    };
+    const [dailyData, worldCupData] = await Promise.all([
+      postJson(playlistEndpoint, { ...basePayload, category: "daily_games" }),
+      postJson(playlistEndpoint, { ...basePayload, category: "world_cup" }),
+    ]);
+    const uniqueFootballEntries = (entries, extraFilter = () => true) => {
+      const seen = new Set();
+      return (entries || []).filter(isFootballGameShortcut).filter(extraFilter).filter((entry) => {
         const key = dailyGameShortcutLabel(entry).toLocaleLowerCase("pt-BR");
         if (seen.has(key)) {
           return false;
@@ -2497,12 +2650,19 @@ async function loadDailyGameShortcuts() {
         seen.add(key);
         return true;
       });
-    dailyGameShortcutEntries = footballEntries;
-    worldCupShortcutEntries = footballEntries.filter(isNationalTeamGame);
+    };
+    dailyGameShortcutEntries = uniqueFootballEntries(dailyData.entries);
+    worldCupShortcutEntries = uniqueFootballEntries(worldCupData.entries, isNationalTeamGame);
+    dailyGameShortcutCacheKey = cacheKey;
     renderDailyGameQuickLinks();
     renderWorldCupQuickLinks();
+  })();
+  try {
+    await dailyGameShortcutLoadPromise;
   } catch (error) {
     console.warn("[Stream M3U8] Nao foi possivel carregar atalhos de futebol", error);
+  } finally {
+    dailyGameShortcutLoadPromise = null;
   }
 }
 
@@ -2510,7 +2670,15 @@ async function loadRealityShortcuts() {
   if (!playlistId && !playlistPayload) {
     return;
   }
-  try {
+  const cacheKey = `${playlistEndpoint}:${playlistId || "payload"}:${authToken ? "auth" : "guest"}`;
+  if (realityShortcutCacheKey === cacheKey && realityShortcutEntries.length) {
+    renderRealityQuickLinks();
+    return;
+  }
+  if (realityShortcutLoadPromise) {
+    return realityShortcutLoadPromise;
+  }
+  realityShortcutLoadPromise = (async () => {
     const data = await postJson(playlistEndpoint, {
       ...(playlistPayload && playlistEndpoint !== "/api/playlist/preloaded" ? playlistPayload : {}),
       playlist_id: playlistId,
@@ -2529,9 +2697,15 @@ async function loadRealityShortcuts() {
       seen.add(key);
       return true;
     });
+    realityShortcutCacheKey = cacheKey;
     renderRealityQuickLinks();
+  })();
+  try {
+    await realityShortcutLoadPromise;
   } catch (error) {
     console.warn("[Stream M3U8] Nao foi possivel carregar atalhos de reality", error);
+  } finally {
+    realityShortcutLoadPromise = null;
   }
 }
 
@@ -2730,9 +2904,13 @@ function renderEntries() {
     fragment.appendChild(createEntryElement(entry));
   });
   els.playlistEntries.appendChild(fragment);
+  bindImageFallbacks(els.playlistEntries);
 }
 
 function shouldShowPlaylistResults() {
+  if (isTrialUser() && !els.entrySearch.value.trim() && !selectedSeriesKey) {
+    return false;
+  }
   if (isTvAwaitingSearch() || isDailyGamesAwaitingSearch() || isWorldCupAwaitingSelection()) {
     return false;
   }
@@ -2795,9 +2973,13 @@ function createEntryElement(entry) {
   item.className = `entry ${entry.locked ? "locked-entry" : ""}`.trim();
   item.setAttribute("role", "button");
   item.tabIndex = 0;
-  const logo = entry.logo
-    ? `<img class="entry-logo" src="${escapeHtml(entry.logo)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
-    : `<div class="entry-logo placeholder">${escapeHtml((entry.title || "?").slice(0, 1))}</div>`;
+  const logo = imageWithFallback({
+    className: "entry-logo",
+    src: entry.logo,
+    candidates: curatedCoverSources(`${entry.title || ""} ${entry.group || ""}`),
+    placeholder: `<div class="entry-logo placeholder">${escapeHtml((entry.title || "?").slice(0, 1))}</div>`,
+    fallbackLabel: (entry.title || "?").slice(0, 1),
+  });
   const urlLine = entry.locked
     ? `<small class="locked-copy">Adquira um pacote para acessar este conteúdo</small>`
     : `<small>${escapeHtml(entry.url)}</small>`;

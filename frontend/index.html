@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body data-auth-state="booting">
     <main class="app">
       <header class="top-bar">
         <div class="ship-brand" aria-label="Stream Hub Pirata">
@@ -32,6 +32,11 @@
         </div>
       </header>
 
+      <div class="telegram-access-actions" data-auth-guest hidden>
+        <a class="telegram-access-link" href="https://t.me/streamCorsarioBot?start=access" target="_blank" rel="noopener noreferrer">Adquira seu link de acesso</a>
+        <a class="telegram-access-link demo-access-link" href="/demo.mp4" target="_blank" rel="noopener noreferrer">Como utilizar o App</a>
+      </div>
+
       <section id="auth-panel" class="auth-panel panel">
         <div>
           <span class="section-kicker">Acesso</span>
@@ -45,9 +50,6 @@
             <button type="submit">Acessar</button>
             <p id="auth-message" class="auth-message" hidden></p>
           </form>
-          <div class="telegram-access-actions">
-            <a class="telegram-access-link" href="https://t.me/streamCorsarioBot" target="_blank" rel="noopener noreferrer">Adquira seu link de acesso</a>
-          </div>
         </div>
       </section>
 
@@ -207,6 +209,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.7"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260613-series-search-fix"></script>
   </body>
 </html>

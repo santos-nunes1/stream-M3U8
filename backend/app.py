@@ -43,7 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DEFAULT_PRELOADED_PLAYLIST_PATH = PROJECT_ROOT / "data" / "preloaded_playlist.m3u"
 SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
-PLAYLIST_CATALOG_CACHE_VERSION = 14
+PLAYLIST_CATALOG_CACHE_VERSION = 17
 SEARCH_PREFIX_MIN_LENGTH = 2
 SEARCH_PREFIX_MAX_LENGTH = 8
 ADMIN_USER_ID = "__admin__"
@@ -218,6 +218,8 @@ class PlaylistCatalog:
         self.indices_by_category: Dict[str, List[int]] = {}
         self.indices_by_group: Dict[str, List[int]] = {}
         self.daily_game_indices: List[int] = []
+        self.world_cup_indices: List[int] = []
+        self.reality_indices: List[int] = []
         self.token_index: Dict[str, List[int]] = {}
         self.token_prefix_index: Dict[str, List[int]] = {}
         self.query_cache: Dict[str, List[int]] = {}
@@ -228,6 +230,9 @@ class PlaylistCatalog:
         self.series_logo_keys: Dict[str, Set[str]] = {}
         self.popular_series_summary_cache: Dict[bool, List[Dict]] = {}
         self.global_groups_cache: Dict[bool, List[str]] = {}
+        self.metadata_without_adult_cache: Optional[Dict] = None
+        self.featured_sections_response_cache: Dict[str, Dict] = {}
+        self.allowed_indices_cache: Dict[str, Set[int]] = {}
         self.series_index_ready = build_series_index
         self.query_cache_lock = threading.Lock()
         self._build()
@@ -238,6 +243,8 @@ class PlaylistCatalog:
         state = dict(self.__dict__)
         state["cache_version"] = PLAYLIST_CATALOG_CACHE_VERSION
         state["query_cache"] = {}
+        state["featured_sections_response_cache"] = {}
+        state["allowed_indices_cache"] = {}
         state.pop("query_cache_lock", None)
         state.pop("_needs_cache_refresh", None)
         return state
@@ -251,10 +258,28 @@ class PlaylistCatalog:
             self.adult_indices = {index for index, entry in enumerate(self.entries) if _is_adult_entry(entry)}
         if "daily_game_indices" not in self.__dict__:
             self.daily_game_indices = [
-                index for index, entry in enumerate(self.entries) if _is_daily_game_entry(entry)
+                index
+                for index, entry in enumerate(self.entries)
+                if (entry.get("category") or "other") not in {"movies", "series"}
+                and _is_daily_game_entry(entry)
+            ]
+        if "world_cup_indices" not in self.__dict__:
+            self.world_cup_indices = [
+                index
+                for index, entry in enumerate(self.entries)
+                if (entry.get("category") or "other") not in {"movies", "series"}
+                and _is_national_team_game_entry(entry)
+            ]
+        if "reality_indices" not in self.__dict__:
+            self.reality_indices = [
+                index
+                for index, value in enumerate(getattr(self, "search_index", []))
+                if (self.entries[index].get("category") or "other") != "series"
+                and ("a casa do patrao" in value or "casa do patrao" in value)
             ]
         if "daily_games" not in self.metadata.get("counts", {}):
             self.metadata.setdefault("counts", {})["daily_games"] = len(self.daily_game_indices)
+        self.metadata.setdefault("counts", {})["world_cup"] = len(self.world_cup_indices)
         if "series_indices" not in self.__dict__ or "series_summaries" not in self.__dict__:
             self.series_indices = {}
             self.series_summaries = {}
@@ -270,6 +295,12 @@ class PlaylistCatalog:
             self.popular_series_summary_cache = {}
         if "global_groups_cache" not in self.__dict__:
             self.global_groups_cache = {}
+        if "metadata_without_adult_cache" not in self.__dict__:
+            self.metadata_without_adult_cache = None
+        if "featured_sections_response_cache" not in self.__dict__:
+            self.featured_sections_response_cache = {}
+        if "allowed_indices_cache" not in self.__dict__:
+            self.allowed_indices_cache = {}
         if "token_prefix_index" not in self.__dict__:
             self.token_prefix_index = {}
             self._needs_cache_refresh = True
@@ -291,6 +322,7 @@ class PlaylistCatalog:
 
     def _build(self) -> None:
         groups = set()
+        build_prefix_index = _env_enabled("PLAYLIST_BUILD_PREFIX_INDEX_ON_STARTUP", False)
 
         for index, entry in enumerate(self.entries):
             category = entry.get("category") or "other"
@@ -299,17 +331,14 @@ class PlaylistCatalog:
             searchable = _normalize_search_value(f"{title} {group}")
             self.metadata["counts"][category] = self.metadata["counts"].get(category, 0) + 1
             self.indices_by_category.setdefault(category, []).append(index)
-            if any(
-                keyword in searchable
-                for keyword in (
-                    "jogos do dia",
-                    "jogo do dia",
-                    "jogos de hoje",
-                    "jogo de hoje",
-                )
-            ):
+            if category not in {"movies", "series"} and _is_daily_game_entry(entry):
                 self.daily_game_indices.append(index)
                 self.metadata["counts"]["daily_games"] = self.metadata["counts"].get("daily_games", 0) + 1
+            if category not in {"movies", "series"} and _is_national_team_game_entry(entry):
+                self.world_cup_indices.append(index)
+                self.metadata["counts"]["world_cup"] = self.metadata["counts"].get("world_cup", 0) + 1
+            if category != "series" and ("a casa do patrao" in searchable or "casa do patrao" in searchable):
+                self.reality_indices.append(index)
             adult_text = _normalize_search_value(f"{searchable} {category} {entry.get('url', '')}")
             adult_tokens = set(SEARCH_TOKEN_RE.findall(adult_text))
             if bool(adult_tokens.intersection(ADULT_KEYWORDS)) or "18+" in adult_text or any(
@@ -326,6 +355,8 @@ class PlaylistCatalog:
             entry_prefixes = set()
             for token in set(SEARCH_TOKEN_RE.findall(searchable)):
                 self.token_index.setdefault(token, []).append(index)
+                if not build_prefix_index:
+                    continue
                 max_prefix_length = min(len(token), SEARCH_PREFIX_MAX_LENGTH)
                 for prefix_length in range(SEARCH_PREFIX_MIN_LENGTH, max_prefix_length + 1):
                     prefix = token[:prefix_length]
@@ -393,6 +424,40 @@ class PlaylistCatalog:
         access_seed: str = "",
     ) -> Dict:
         query = _normalize_search_value(query.strip())
+        if category in {"daily_games", "world_cup", "reality"} and not group and not query and not series_key:
+            allowed_indices = set() if allowed_terms is not None else None
+            category_indices = [
+                index
+                for index in self._filtered_indices(category, "")
+                if include_adult or index not in self.adult_indices
+            ]
+            total = len(category_indices)
+            page_start = max(offset, 0)
+            page_end = page_start + limit
+            return {
+                "playlist_id": playlist_id,
+                "entries": [self._public_entry(index, allowed_indices) for index in category_indices[page_start:page_end]],
+                "series_groups": [],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + limit < total,
+                "counts": self._metadata_for_indices(category_indices)["counts"],
+                "groups": [],
+            }
+        if (category == "all" or allowed_terms is not None) and not group and not query and not series_key:
+            metadata = self.metadata if include_adult else self._metadata_without_adult()
+            return {
+                "playlist_id": playlist_id,
+                "entries": [],
+                "series_groups": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+                "counts": metadata["counts"],
+                "groups": self._global_groups(include_adult),
+            }
         if category == "series" or series_key:
             self._ensure_series_index()
         if series_key:
@@ -417,6 +482,29 @@ class PlaylistCatalog:
                 seed=access_seed,
             )
 
+        series_title_fallback = False
+        if query and category in {"all", "series"} and not series_key and not indices:
+            summary_indices = self._series_title_fallback_indices(query, include_adult)
+            if summary_indices:
+                indices = summary_indices
+                series_title_fallback = True
+
+        if series_title_fallback:
+            total = len(indices)
+            page_start = max(offset, 0)
+            page_end = page_start + limit
+            metadata = self.metadata if include_adult else self._metadata_for_indices(indices)
+            return {
+                "playlist_id": playlist_id,
+                "entries": [self._public_entry(index, allowed_indices) for index in indices[page_start:page_end]],
+                "series_groups": [],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + limit < total,
+                "counts": metadata["counts"],
+                "groups": self._global_groups(include_adult),
+            }
         if category == "series" and not series_key:
             return self._series_group_response(playlist_id, indices, offset, limit, include_adult)
         if query and category == "all" and not series_key and indices and all(
@@ -479,6 +567,34 @@ class PlaylistCatalog:
         except (TypeError, ValueError):
             episode = 0
         return (season, episode, _normalize_search_value(entry.get("title", "")))
+
+    def _featured_cache_key(self, sections: List[Dict], include_adult: bool) -> str:
+        return json.dumps(
+            {
+                "sections": _normalized_catalog_featured_sections(sections),
+                "include_adult": bool(include_adult),
+                "day": time.strftime("%Y-%m-%d"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _allowed_indices_cache_key(
+        self,
+        allowed_terms: List[str],
+        featured_sections: List[Dict],
+        include_adult: bool,
+    ) -> str:
+        return json.dumps(
+            {
+                "allowed_terms": _normalized_catalog_terms(allowed_terms),
+                "featured_sections": _normalized_catalog_featured_sections(featured_sections),
+                "include_adult": bool(include_adult),
+                "day": time.strftime("%Y-%m-%d"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     def _public_entry(self, index: int, allowed_indices: Optional[Set[int]] = None) -> Dict:
         entry = dict(self.entries[index])
@@ -621,6 +737,10 @@ class PlaylistCatalog:
         include_adult: bool = False,
         seed: str = "",
     ) -> Set[int]:
+        cache_key = self._allowed_indices_cache_key(allowed_terms, featured_sections or [], include_adult)
+        cached = self.allowed_indices_cache.get(cache_key)
+        if cached is not None:
+            return set(cached)
         normalized_allowed_terms = [_normalize_search_value(term) for term in (allowed_terms or []) if _normalize_search_value(term)]
         allowed = set()
         if normalized_allowed_terms:
@@ -637,6 +757,7 @@ class PlaylistCatalog:
             allowed.update(self._first_series_indices(series_candidates))
         for section in featured_sections or []:
             allowed.update(self._indices_for_featured_section(section, include_adult=include_adult, seed=seed))
+        self.allowed_indices_cache[cache_key] = set(allowed)
         return allowed
 
     def _series_group_response(self, playlist_id: str, indices: List[int], offset: int, limit: int, include_adult: bool) -> Dict:
@@ -704,6 +825,58 @@ class PlaylistCatalog:
             "counts": metadata["counts"],
             "groups": self._global_groups(include_adult),
         }
+
+    def _series_summary_match_indices(self, query: str, include_adult: bool) -> List[int]:
+        query = _normalize_search_value(query)
+        query_tokens = SEARCH_TOKEN_RE.findall(query)
+        if not query_tokens:
+            return []
+        matched: Set[int] = set()
+        for series_key, summary in self.series_summaries.items():
+            haystack = _normalize_search_value(
+                f"{summary.get('title', '')} {summary.get('group', '')} {' '.join(summary.get('groups', []))}"
+            )
+            if query not in haystack and not all(token in haystack for token in query_tokens):
+                continue
+            series_indices = self.series_indices.get(series_key, [])
+            if not include_adult:
+                series_indices = [index for index in series_indices if index not in self.adult_indices]
+            matched.update(series_indices)
+        return sorted(matched)
+
+    def _series_title_fallback_indices(self, query: str, include_adult: bool) -> List[int]:
+        query = _normalize_search_value(query)
+        query_tokens = SEARCH_TOKEN_RE.findall(query)
+        if len(query) < 3 or not query_tokens:
+            return []
+
+        matched_keys: Set[str] = set()
+        series_indices = self.indices_by_category.get("series", [])
+        for index in series_indices:
+            if not include_adult and index in self.adult_indices:
+                continue
+            entry = self.entries[index]
+            if not entry.get("series_key") or not entry.get("series_title"):
+                entry.update(extract_series_metadata(entry.get("title", ""), entry.get("group", ""), entry.get("url", "")))
+            haystack = _normalize_search_value(f"{entry.get('series_title', '')} {entry.get('group', '')}")
+            if query in haystack or all(token in haystack for token in query_tokens):
+                key = entry.get("series_key")
+                if key:
+                    matched_keys.add(key)
+
+        if not matched_keys:
+            return []
+
+        matched_indices = []
+        for index in series_indices:
+            if not include_adult and index in self.adult_indices:
+                continue
+            entry = self.entries[index]
+            if not entry.get("series_key") or not entry.get("series_title"):
+                entry.update(extract_series_metadata(entry.get("title", ""), entry.get("group", ""), entry.get("url", "")))
+            if entry.get("series_key") in matched_keys:
+                matched_indices.append(index)
+        return sorted(matched_indices, key=self._series_episode_sort_key)
 
     def _looks_like_full_series_listing(self, indices: List[int]) -> bool:
         series_indices = self.indices_by_category.get("series", [])
@@ -845,6 +1018,13 @@ class PlaylistCatalog:
                 groups.add(group)
         return {"counts": counts, "groups": sorted(groups)}
 
+    def _metadata_without_adult(self) -> Dict:
+        if self.metadata_without_adult_cache is None:
+            self.metadata_without_adult_cache = self._metadata_for_indices(
+                [index for index in self.all_indices if index not in self.adult_indices]
+            )
+        return self.metadata_without_adult_cache
+
     def _global_groups(self, include_adult: bool) -> List[str]:
         cached = self.global_groups_cache.get(include_adult)
         if cached is not None:
@@ -865,15 +1045,9 @@ class PlaylistCatalog:
         if category == "daily_games":
             indices = self.daily_game_indices
         elif category == "world_cup":
-            indices = [index for index in self.daily_game_indices if _is_national_team_game_entry(self.entries[index])]
+            indices = self.world_cup_indices
         elif category == "reality":
-            reality_terms = ("a casa do patrao", "casa do patrao")
-            indices = [
-                index
-                for index in self.all_indices
-                if (self.entries[index].get("category") or "other") != "series"
-                and any(term in self.search_index[index] for term in reality_terms)
-            ]
+            indices = self.reality_indices
         else:
             indices = self.all_indices if category == "all" else self.indices_by_category.get(category, [])
         if group:
@@ -888,10 +1062,16 @@ class PlaylistCatalog:
         include_adult: bool = False,
         seed: str = "",
     ) -> Dict:
+        cache_key = self._featured_cache_key(sections, include_adult)
+        cached = self.featured_sections_response_cache.get(cache_key)
+        if cached is not None:
+            return cached
         payload_sections = []
+        allowed_for_sections: Set[int] = set()
         for section in sections:
             category = section.get("category") or "all"
             indices = self._indices_for_featured_section(section, include_adult=include_adult, seed=seed)
+            allowed_for_sections.update(indices)
             entries = [self._public_entry(index, set(indices)) for index in indices]
             cover_url = next((entry.get("logo") for entry in entries if entry.get("logo")), "")
             groups = []
@@ -917,7 +1097,10 @@ class PlaylistCatalog:
                     "total": len(indices),
                 }
             )
-        return {"playlist_id": playlist_id, "sections": payload_sections}
+        response = {"playlist_id": playlist_id, "sections": payload_sections}
+        self.featured_sections_response_cache[cache_key] = response
+        self.allowed_indices_cache[self._allowed_indices_cache_key([], sections, include_adult)] = allowed_for_sections
+        return response
 
     def _query_indices(self, query: str) -> Optional[List[int]]:
         with self.query_cache_lock:
@@ -974,7 +1157,7 @@ class PlaylistCatalog:
         best_prefix = ""
         best_indices = None
         for cached_query, indices in self.query_cache.items():
-            if cached_query and cached_query != query and query.startswith(cached_query):
+            if indices and cached_query and cached_query != query and query.startswith(cached_query):
                 if len(cached_query) > len(best_prefix):
                     best_prefix = cached_query
                     best_indices = indices
@@ -1161,14 +1344,9 @@ def _normalized_catalog_featured_sections(value) -> List[Dict]:
 
 def _is_daily_game_entry(entry: Dict[str, str]) -> bool:
     text = _normalize_search_value(f"{entry.get('title', '')} {entry.get('group', '')}")
-    return any(
-        keyword in text
-        for keyword in (
-            "jogos do dia",
-            "jogo do dia",
-            "jogos de hoje",
-            "jogo de hoje",
-        )
+    return bool(
+        re.search(r"\b(?:jogos? do dia|jogos? de hoje)\b", text)
+        or (_is_team_game_entry(entry) and _has_game_time(entry.get("title", "")))
     )
 
 
@@ -1184,6 +1362,94 @@ NATIONAL_TEAM_HINTS = {
     "suica", "suecia", "tchequia", "tunisia", "turquia", "uruguai", "uzbequistao",
 }
 
+WORLD_CUP_2026_TEAM_ALIASES = {
+    "africa do sul",
+    "alemanha",
+    "algeria",
+    "argelia",
+    "argentina",
+    "arabia saudita",
+    "australia",
+    "austria",
+    "belgica",
+    "belgium",
+    "bosnia",
+    "bosnia e herzegovina",
+    "brasil",
+    "brazil",
+    "cabo verde",
+    "canada",
+    "cape verde",
+    "catar",
+    "colombia",
+    "coreia do sul",
+    "costa do marfim",
+    "croacia",
+    "croatia",
+    "curacao",
+    "curacao",
+    "czech republic",
+    "czechia",
+    "dr congo",
+    "ecuador",
+    "egito",
+    "egypt",
+    "england",
+    "equador",
+    "escocia",
+    "espanha",
+    "estados unidos",
+    "eua",
+    "franca",
+    "france",
+    "gana",
+    "ghana",
+    "haiti",
+    "holanda",
+    "inglaterra",
+    "ira",
+    "iraq",
+    "iraque",
+    "iran",
+    "ivory coast",
+    "japao",
+    "japan",
+    "jordania",
+    "jordan",
+    "marrocos",
+    "mexico",
+    "morocco",
+    "netherlands",
+    "noruega",
+    "nova zelandia",
+    "paises baixos",
+    "panama",
+    "paraguai",
+    "portugal",
+    "qatar",
+    "rd congo",
+    "republica democratica do congo",
+    "republica tcheca",
+    "scotland",
+    "senegal",
+    "south africa",
+    "south korea",
+    "spain",
+    "suica",
+    "suecia",
+    "sweden",
+    "switzerland",
+    "tchequia",
+    "tunisia",
+    "turquia",
+    "turkey",
+    "uruguai",
+    "uruguay",
+    "usa",
+    "uzbequistao",
+    "uzbekistan",
+}
+
 CLUB_COMPETITION_HINTS = {
     "brasileirao", "serie a", "serie b", "libertadores", "sul americana", "champions", "premier league", "la liga",
     "bundesliga", "calcio", "mls", "nba", "ufc", "combate", "tenis", "volei", "clubes", "sub 20",
@@ -1191,20 +1457,31 @@ CLUB_COMPETITION_HINTS = {
 
 
 def _is_team_game_entry(entry: Dict[str, str]) -> bool:
-    text = _normalize_search_value(f"{entry.get('title', '')} {entry.get('group', '')}")
+    text = _normalize_search_value(entry.get("title", ""))
     return bool(re.search(r"\b[\w ]{2,}\s+(?:x|vs|versus)\s+[\w ]{2,}\b", text))
 
 
+def _has_game_time(value: str) -> bool:
+    return bool(re.search(r"\b(?:[01]?\d|2[0-3])[:h][0-5]\d\b", str(value or "")))
+
+
+def _world_cup_team_match_count(title_text: str) -> int:
+    matched = {
+        team
+        for team in WORLD_CUP_2026_TEAM_ALIASES
+        if re.search(rf"\b{re.escape(team)}\b", title_text)
+    }
+    return len(matched)
+
+
 def _is_national_team_game_entry(entry: Dict[str, str]) -> bool:
-    text = _normalize_search_value(f"{entry.get('title', '')} {entry.get('group', '')}")
+    title_text = _normalize_search_value(entry.get("title", ""))
+    full_text = _normalize_search_value(f"{entry.get('title', '')} {entry.get('group', '')}")
     if not _is_team_game_entry(entry):
         return False
-    if any(hint in text for hint in CLUB_COMPETITION_HINTS):
+    if any(hint in full_text for hint in CLUB_COMPETITION_HINTS):
         return False
-    return any(team in text for team in NATIONAL_TEAM_HINTS) or any(
-        hint in text
-        for hint in ("amistoso", "selecao", "selecoes", "copa do mundo", "eliminatoria", "nations league", "euro", "conmebol", "concacaf")
-    )
+    return _world_cup_team_match_count(title_text) >= 2
 
 
 def _normalize_series_number(value) -> str:
@@ -2128,6 +2405,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/api/playlist/preloaded/status":
                 self._handle_preloaded_playlist_status()
                 return
+            if urllib.parse.urlsplit(self.path).path == "/demo.mp4":
+                self._serve_demo_video()
+                return
             if self.path.startswith("/vlc-proxy/"):
                 self._handle_vlc_proxy()
                 return
@@ -2540,6 +2820,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             token = self.server.register_vlc_stream(source_url, auth["user"]["id"], auth["session_id"])
             mime_type = self._guess_media_type(source_url)
             extension = self._external_stream_extension(mime_type, source_url)
+            proxy_stream_url = f"{self._base_url()}/vlc-proxy/{token}/stream{extension}"
             self._log_access(
                 "vlc_open",
                 user_id=auth["user"]["id"],
@@ -2553,15 +2834,15 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 extension=extension,
                 source_path=urllib.parse.urlsplit(source_url).path[-120:],
             )
-            stream_url = f"{self._base_url()}/vlc-proxy/{token}/stream{extension}"
             self._send_json(
                 200,
                 {
-                    "stream_url": stream_url,
+                    "stream_url": source_url,
+                    "proxy_stream_url": proxy_stream_url,
                     "mime_type": mime_type,
                     "launch_urls": [
-                        f"vlc://{stream_url}",
-                        f"vlc-x-callback://x-callback-url/stream?url={urllib.parse.quote(stream_url, safe='')}",
+                        f"vlc://{source_url}",
+                        f"vlc-x-callback://x-callback-url/stream?url={urllib.parse.quote(source_url, safe='')}",
                     ],
                 },
             )
@@ -3017,6 +3298,23 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _serve_demo_video(self) -> None:
+        target = (PROJECT_ROOT / "bot" / "assets" / "demo.mp4").resolve()
+        allowed_root = (PROJECT_ROOT / "bot" / "assets").resolve()
+        if not str(target).startswith(str(allowed_root)) or not target.exists() or target.is_dir():
+            self._send_json_error(404, "Demo nao encontrada")
+            return
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -3588,7 +3886,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
             self.vlc_tokens.pop(token, None)
 
     def set_playlist_entries(self, playlist_id: str, entries: List[Dict[str, str]], clear: bool = False) -> None:
-        catalog = PlaylistCatalog(entries, build_series_index=True)
+        catalog = PlaylistCatalog(entries, build_series_index=False)
         self.set_playlist_catalog(playlist_id, catalog, clear=clear)
 
     def set_playlist_catalog(self, playlist_id: str, catalog: PlaylistCatalog, clear: bool = False) -> None:
@@ -3750,7 +4048,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                         entry_count=len(entries),
                     )
                 if catalog is None or getattr(catalog, "_needs_cache_refresh", False):
-                    catalog = PlaylistCatalog(entries, build_series_index=True)
+                    catalog = PlaylistCatalog(entries, build_series_index=False)
                     self._write_parsed_catalog_cache(parsed_catalog_path, catalog)
                 self.set_playlist_catalog(playlist_id, catalog, clear=True)
                 with self.preloaded_load_lock:
@@ -3806,7 +4104,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 total_bytes=total_bytes,
                 entry_count=len(entries),
             )
-        catalog = PlaylistCatalog(entries, build_series_index=True)
+        catalog = PlaylistCatalog(entries, build_series_index=False)
         self._write_parsed_catalog_cache(parsed_catalog_path, catalog)
         self.set_playlist_catalog(playlist_id, catalog, clear=True)
         with self.preloaded_load_lock:
@@ -3849,6 +4147,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         return json.loads(parsed_path.read_text(encoding="utf-8")) if parsed_path.exists() else None
 
     def _load_parsed_catalog_cache(self, parsed_catalog_path: Path) -> Optional[PlaylistCatalog]:
+        if not _env_enabled("PLAYLIST_USE_CATALOG_PICKLE_CACHE", False):
+            return None
         if not parsed_catalog_path.exists():
             return None
         if not self._verify_pickle_signature(parsed_catalog_path):
@@ -3863,6 +4163,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         return catalog
 
     def _write_parsed_catalog_cache(self, parsed_catalog_path: Path, catalog: PlaylistCatalog) -> None:
+        if not _env_enabled("PLAYLIST_USE_CATALOG_PICKLE_CACHE", False):
+            return
         with tempfile.NamedTemporaryFile("wb", delete=False, dir=parsed_catalog_path.parent) as temp_file:
             parsed_temp_path = Path(temp_file.name)
             pickle.dump(catalog, temp_file, protocol=pickle.HIGHEST_PROTOCOL)
@@ -3893,6 +4195,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         signature_path = self._pickle_signature_path(path)
         if not signature_path.exists():
             return False
+        if _env_enabled("PLAYLIST_TRUST_LOCAL_PICKLE_CACHE", True):
+            return True
         expected = signature_path.read_text(encoding="utf-8").strip()
         return hmac.compare_digest(expected, self._pickle_signature(path))
 
@@ -4253,11 +4557,18 @@ class StreamApplicationServer(ThreadingHTTPServer):
             entry_count=0,
             error="",
         )
-        content_digest = self._file_sha256(path)
         parsed_path = path.with_suffix(path.suffix + ".entries.json")
         parsed_pickle_path = path.with_suffix(path.suffix + ".entries.pickle")
         parsed_catalog_path = path.with_suffix(path.suffix + ".catalog.pickle")
         digest_path = path.with_suffix(path.suffix + ".sha256")
+        if (
+            _env_enabled("PLAYLIST_TRUST_LOCAL_PICKLE_CACHE", True)
+            and digest_path.exists()
+            and (parsed_pickle_path.exists() or parsed_catalog_path.exists())
+        ):
+            content_digest = digest_path.read_text(encoding="utf-8").strip()
+        else:
+            content_digest = self._file_sha256(path)
         has_valid_digest = digest_path.exists() and digest_path.read_text(encoding="utf-8").strip() == content_digest
         catalog = self._load_parsed_catalog_cache(parsed_catalog_path) if has_valid_digest else None
         if catalog is not None:
@@ -4301,7 +4612,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 total_bytes=total_bytes,
                 entry_count=len(entries),
             )
-            catalog = PlaylistCatalog(entries, build_series_index=True)
+            catalog = PlaylistCatalog(entries, build_series_index=False)
             self._write_parsed_catalog_cache(parsed_catalog_path, catalog)
         else:
             self._update_cache_job(
@@ -4463,7 +4774,12 @@ def run_server() -> None:
     server = create_server(host=host, port=port, service=service)
     server.run_startup_playlist_refresh()
     if _env_enabled("PLAYLIST_LOAD_BEFORE_SERVING", False):
-        server.load_preloaded_playlist_before_serving()
+        if _env_enabled("PLAYLIST_BLOCK_BEFORE_SERVING", False):
+            server.load_preloaded_playlist_before_serving()
+        else:
+            started = server.start_preloaded_load(server.load_preloaded_playlist_before_serving)
+            if started.get("status") == "loading":
+                print("Starting background preloaded playlist load.", flush=True)
     print("Serving frontend and API:")
     for url in _access_urls(host, port):
         print(f"- {url}")
