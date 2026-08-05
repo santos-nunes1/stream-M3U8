@@ -65,6 +65,10 @@ const els = {
   externalPlayerDescription: document.querySelector("#external-player-description"),
   externalPlayerInstallLink: document.querySelector("#external-player-install-link"),
   externalPlayerRecommendation: document.querySelector("#external-player-recommendation"),
+  episodeNav: document.querySelector("#episode-nav"),
+  prevEpisode: document.querySelector("#prev-episode"),
+  nextEpisode: document.querySelector("#next-episode"),
+  episodeNavLabel: document.querySelector("#episode-nav-label"),
 };
 
 let hls = null;
@@ -72,6 +76,7 @@ let mpegtsPlayer = null;
 let playbackMonitorTimer = null;
 let activeStreamId = "";
 let activeEntry = null;
+let activeSeriesPlayback = null;
 let activeUsesProxy = false;
 let playbackSeq = 0;
 let allEntries = [];
@@ -112,6 +117,7 @@ let appLoaded = false;
 let startupPlaylistLoadPromise = null;
 let trialCatalogLoadPromise = null;
 let pendingExternalLaunch = null;
+let publicAccessMode = false;
 const PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 500;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -293,6 +299,7 @@ function setAuthMessage(message, type = "") {
 function showLogin() {
   document.body.dataset.authState = "login";
   currentUser = null;
+  publicAccessMode = false;
   appLoaded = false;
   trialCatalogLoadPromise = null;
   stopHeartbeat();
@@ -320,6 +327,10 @@ function showAuthenticatedApp(user) {
     element.hidden = false;
   });
   els.authUserName.textContent = user.name || user.email;
+  if (isPublicAccessUser(user)) {
+    els.authUserLimits.textContent = "Acesso público | sem login";
+    return;
+  }
   if (user.is_admin) {
     els.authUserLimits.textContent = "Acesso administrador | sem limitacao";
     return;
@@ -331,6 +342,10 @@ function showAuthenticatedApp(user) {
 
 function isTrialUser(user = currentUser) {
   return user?.catalog_access_mode === "allowlist";
+}
+
+function isPublicAccessUser(user = currentUser) {
+  return publicAccessMode || user?.id === "__public__";
 }
 
 function startAuthenticatedExperience() {
@@ -365,7 +380,7 @@ function startHeartbeat(intervalSeconds = 30) {
 }
 
 function sendHeartbeat() {
-  if (!currentUser && !authToken) {
+  if (isPublicAccessUser() || (!currentUser && !authToken)) {
     return;
   }
   postJson("/api/auth/heartbeat", {})
@@ -411,8 +426,11 @@ async function initAuth() {
   }
   try {
     const data = await getJson("/api/auth/me");
+    publicAccessMode = Boolean(data.public_access);
     showAuthenticatedApp(data.user);
-    startHeartbeat(data.session?.heartbeat_interval_seconds || 30);
+    if (!publicAccessMode) {
+      startHeartbeat(data.session?.heartbeat_interval_seconds || 30);
+    }
     return true;
   } catch (error) {
     if (isNetworkAuthError(error)) {
@@ -442,6 +460,7 @@ async function loginWithAccessHash(accessHash, options = {}) {
       { auth: false }
     );
     authToken = response.token;
+    publicAccessMode = false;
     els.accessHash.value = "";
     if (options.replaceUrl) {
       window.history.replaceState({}, "", "/");
@@ -458,8 +477,13 @@ async function loginWithAccessHash(accessHash, options = {}) {
 }
 
 async function logout() {
+  if (isPublicAccessUser()) {
+    setStatus("Acesso público ativo. Login não é necessário.", "ok");
+    return;
+  }
   await postJson("/api/auth/logout", {}).catch(() => undefined);
   authToken = "";
+  publicAccessMode = false;
   showLogin();
   setAuthMessage("Sessao encerrada.", "ok");
 }
@@ -520,6 +544,7 @@ async function loadAppConfig() {
   try {
     const config = await getJson("/api/config", { auth: false });
     els.playbackMode.value = normalizePlaybackMode(config.playback_mode);
+    publicAccessMode = Boolean(config.public_access_enabled);
   } catch {
     els.playbackMode.value = "auto";
   }
@@ -964,6 +989,11 @@ function restoreLastSelectedStream() {
   }
   activeStreamId = saved.stream_id;
   activeEntry = saved.entry || { title: "Link direto", url: saved.stream_id };
+  if (activeEntry.category === "series") {
+    setActiveSeriesPlayback(activeEntry);
+  } else {
+    updateEpisodeNav();
+  }
   updateNowPlaying(activeEntry);
   els.stopStream.disabled = false;
   els.openVlc.disabled = false;
@@ -975,6 +1005,7 @@ function restoreLastSelectedStream() {
 function clearPlaybackSelection() {
   activeStreamId = "";
   activeEntry = null;
+  activeSeriesPlayback = null;
   activeUsesProxy = false;
   localStorage.removeItem(LAST_SELECTED_STREAM_STORAGE_KEY);
   els.stopStream.disabled = true;
@@ -985,6 +1016,7 @@ function clearPlaybackSelection() {
   els.proxyUrl.textContent = "";
   destroyPlayer();
   resetNowPlaying();
+  updateEpisodeNav();
 }
 
 function showStatusModal(title, message, type = "loading") {
@@ -1233,6 +1265,7 @@ async function startStream(streamId, entry = null, options = {}) {
   logContentRequest(streamId, entry, playbackMode, mediaKind);
 
   updateNowPlaying(entry || { title: "Link direto", url: streamId });
+  syncSeriesPlaybackFromEntry(entry);
   activeStreamId = streamId;
   activeEntry = entry || { title: "Link direto", url: streamId };
   persistLastSelectedStream(activeStreamId, activeEntry);
@@ -3246,6 +3279,9 @@ async function loadSelectedSeriesSeason({ reset = true } = {}) {
     hasMoreEntries = Boolean(data.has_more) && visibleEntries.length === allEntries.length;
     updateCategoryCounts(data.counts || {});
     renderEntries();
+    if (activeSeriesPlayback?.series_key === selectedSeriesKey) {
+      updateEpisodeNav();
+    }
     setStatus(`${totalEntries} episodio(s) em ${seasonLabel(selectedSeriesSeason)}.`, "ok");
   } catch (error) {
     if (error.name !== "AbortError") {
@@ -3370,6 +3406,297 @@ function episodeCode(episode) {
   return `S${String(episode.season).padStart(2, "0")}E${String(episode.episode).padStart(2, "0")}`;
 }
 
+function entrySeriesIdentity(entry) {
+  if (!entry || entry.category !== "series" || !entry.series_key) {
+    return null;
+  }
+  const season = entry.season_number;
+  const episode = entry.episode_number;
+  if (!season && !episode) {
+    return null;
+  }
+  return {
+    series_key: entry.series_key,
+    season: normalizeSeriesNumber(season || "0"),
+    episode: normalizeSeriesNumber(episode || "0"),
+  };
+}
+
+function seriesEpisodeIdentity(season, episode) {
+  return `${normalizeSeriesNumber(season)}:${normalizeSeriesNumber(episode)}`;
+}
+
+function sortedSeriesSeasons() {
+  return (selectedSeriesSeasons.length ? selectedSeriesSeasons : [])
+    .slice()
+    .sort((a, b) => Number(a.season || 0) - Number(b.season || 0));
+}
+
+function variantSignature(entry) {
+  if (!entry) {
+    return "";
+  }
+  const text = `${entry.title || ""} ${entry.group || ""}`.toLowerCase();
+  const parts = [];
+  if (/dub|dublado|dual/.test(text)) {
+    parts.push("dub");
+  }
+  if (/leg|legendado/.test(text)) {
+    parts.push("leg");
+  }
+  if (entry.group) {
+    parts.push(entry.group.toLowerCase());
+  }
+  if (entry.resolution) {
+    parts.push(entry.resolution.toLowerCase());
+  }
+  return parts.join("|");
+}
+
+function pickSameVariant(episodeGroup, preferredEntry = null) {
+  const variants = episodeGroup?.variants || [];
+  if (!variants.length) {
+    return null;
+  }
+  if (!preferredEntry) {
+    return variants.find(isEntryPlayable) || variants[0];
+  }
+  const exact = variants.find((variant) => variant.url === preferredEntry.url);
+  if (exact && isEntryPlayable(exact)) {
+    return exact;
+  }
+  const preferredSignature = variantSignature(preferredEntry);
+  const sameSignature = variants.find(
+    (variant) => variantSignature(variant) === preferredSignature && isEntryPlayable(variant)
+  );
+  if (sameSignature) {
+    return sameSignature;
+  }
+  const sameGroup = variants.find(
+    (variant) => variant.group === preferredEntry.group && isEntryPlayable(variant)
+  );
+  if (sameGroup) {
+    return sameGroup;
+  }
+  return variants.find(isEntryPlayable) || variants[0];
+}
+
+function getOrderedEpisodesForCurrentSeason() {
+  if (!selectedSeriesKey) {
+    return [];
+  }
+  return groupedSeriesEpisodes(allEntries.filter(isEntryInSelectedSeason));
+}
+
+function findEpisodeIndex(episodes, season, episode) {
+  const identity = seriesEpisodeIdentity(season, episode);
+  return episodes.findIndex((item) => seriesEpisodeIdentity(item.season, item.episode) === identity);
+}
+
+function setActiveSeriesPlayback(entry, episodeGroup = null) {
+  const identity = entrySeriesIdentity(entry);
+  if (!identity) {
+    activeSeriesPlayback = null;
+    updateEpisodeNav();
+    return;
+  }
+  activeSeriesPlayback = {
+    ...identity,
+    series_title: entry.series_title || selectedSeriesTitle || entry.title || "Serie",
+    group: entry.group || "",
+    logo: entry.logo || "",
+    logo_candidates: entry.logo_candidates || [],
+    episodeTitle: episodeGroup?.title || entry.episode_title || "",
+    variantEntry: entry,
+  };
+  updateEpisodeNav();
+}
+
+function syncSeriesPlaybackFromEntry(entry) {
+  if (entry?.category === "series" && entrySeriesIdentity(entry)) {
+    setActiveSeriesPlayback(entry);
+    return;
+  }
+  if (entry?.category !== "series") {
+    activeSeriesPlayback = null;
+    updateEpisodeNav();
+  }
+}
+
+function computeEpisodeNavBounds() {
+  if (!activeSeriesPlayback) {
+    return { hasPrev: false, hasNext: false };
+  }
+  const { series_key, season, episode } = activeSeriesPlayback;
+  if (selectedSeriesKey !== series_key) {
+    return { hasPrev: true, hasNext: true };
+  }
+  const episodes = getOrderedEpisodesForCurrentSeason();
+  const index = findEpisodeIndex(episodes, season, episode);
+  if (index < 0) {
+    return { hasPrev: episodes.length > 0, hasNext: episodes.length > 0 };
+  }
+  let hasPrev = index > 0;
+  let hasNext = index < episodes.length - 1;
+  const seasons = sortedSeriesSeasons();
+  const seasonIndex = seasons.findIndex((item) => normalizeSeriesNumber(item.season) === normalizeSeriesNumber(season));
+  if (seasonIndex >= 0) {
+    if (!hasPrev && seasonIndex > 0) {
+      hasPrev = true;
+    }
+    if (!hasNext && seasonIndex < seasons.length - 1) {
+      hasNext = true;
+    }
+  }
+  return { hasPrev, hasNext };
+}
+
+function updateEpisodeNav() {
+  if (!els.episodeNav) {
+    return;
+  }
+  if (!activeSeriesPlayback) {
+    els.episodeNav.hidden = true;
+    if (els.prevEpisode) {
+      els.prevEpisode.disabled = true;
+    }
+    if (els.nextEpisode) {
+      els.nextEpisode.disabled = true;
+    }
+    if (els.episodeNavLabel) {
+      els.episodeNavLabel.textContent = "";
+    }
+    return;
+  }
+  const { season, episode, episodeTitle } = activeSeriesPlayback;
+  const label = episodeCode({ season, episode });
+  els.episodeNav.hidden = false;
+  if (els.episodeNavLabel) {
+    els.episodeNavLabel.textContent = episodeTitle ? `${label} - ${episodeTitle}` : label;
+  }
+  const bounds = computeEpisodeNavBounds();
+  if (els.prevEpisode) {
+    els.prevEpisode.disabled = !bounds.hasPrev;
+  }
+  if (els.nextEpisode) {
+    els.nextEpisode.disabled = !bounds.hasNext;
+  }
+}
+
+async function ensureSeriesSeasonLoaded(seriesKey, season, entry = null) {
+  const normalizedSeason = normalizeSeriesNumber(season);
+  if (
+    selectedSeriesKey === seriesKey
+    && normalizeSeriesNumber(selectedSeriesSeason) === normalizedSeason
+    && allEntries.some(isEntryInSelectedSeason)
+  ) {
+    return;
+  }
+  if (selectedSeriesKey !== seriesKey) {
+    const series = entry
+      ? seriesGroupFromEntry(entry)
+      : allSeriesGroups.find((item) => item.series_key === seriesKey);
+    if (series) {
+      const complete = await resolveCompleteSeriesGroup(series);
+      selectedSeriesKey = complete.series_key || seriesKey;
+      selectedSeriesTitle = complete.title || entry?.series_title || "Serie";
+      selectedSeriesLogo = complete.logo || entry?.logo || "";
+      selectedSeriesLogoCandidates = complete.logo_candidates || entry?.logo_candidates || [];
+      selectedSeriesGroupName = complete.group || entry?.group || "";
+      selectedSeriesSeasons = (complete.seasons || []).slice().sort(
+        (a, b) => Number(a.season || 0) - Number(b.season || 0)
+      );
+    } else {
+      selectedSeriesKey = seriesKey;
+      selectedSeriesTitle = entry?.series_title || selectedSeriesTitle || "Serie";
+      selectedSeriesLogo = entry?.logo || selectedSeriesLogo || "";
+      selectedSeriesLogoCandidates = entry?.logo_candidates || selectedSeriesLogoCandidates || [];
+      selectedSeriesGroupName = entry?.group || selectedSeriesGroupName || "";
+    }
+  }
+  selectedSeriesSeason = normalizedSeason;
+  await loadSelectedSeriesSeason({ reset: true });
+}
+
+async function getAdjacentEpisodeGroup(direction) {
+  if (!activeSeriesPlayback) {
+    return null;
+  }
+  const { series_key, season, episode, variantEntry } = activeSeriesPlayback;
+  await ensureSeriesSeasonLoaded(series_key, season, variantEntry || activeEntry);
+
+  let episodes = getOrderedEpisodesForCurrentSeason();
+  const index = findEpisodeIndex(episodes, season, episode);
+  if (index < 0) {
+    return null;
+  }
+  const targetIndex = index + direction;
+
+  if (targetIndex >= 0 && targetIndex < episodes.length) {
+    return episodes[targetIndex];
+  }
+
+  const seasons = sortedSeriesSeasons();
+  const seasonIndex = seasons.findIndex((item) => normalizeSeriesNumber(item.season) === normalizeSeriesNumber(season));
+  if (seasonIndex < 0) {
+    return null;
+  }
+  const nextSeasonIndex = seasonIndex + direction;
+  if (nextSeasonIndex < 0 || nextSeasonIndex >= seasons.length) {
+    return null;
+  }
+
+  selectedSeriesSeason = normalizeSeriesNumber(seasons[nextSeasonIndex].season);
+  await loadSelectedSeriesSeason({ reset: true });
+  episodes = getOrderedEpisodesForCurrentSeason();
+  if (!episodes.length) {
+    return null;
+  }
+  return direction > 0 ? episodes[0] : episodes[episodes.length - 1];
+}
+
+async function playSeriesEpisodeGroup(episodeGroup, preferredVariant = null) {
+  const entry = pickSameVariant(episodeGroup, preferredVariant || activeSeriesPlayback?.variantEntry);
+  if (!entry) {
+    setStatus("Nenhuma variante disponivel para este episodio.", "error");
+    return;
+  }
+  if (!isEntryPlayable(entry)) {
+    showLockedContentMessage(entry);
+    return;
+  }
+  setActiveSeriesPlayback(entry, episodeGroup);
+  scrollPlayerIntoView();
+  await startStream(entry.url, entry);
+}
+
+async function playAdjacentEpisode(direction) {
+  if (!activeSeriesPlayback) {
+    return;
+  }
+  const previousLabel = els.episodeNavLabel?.textContent || "episodio";
+  if (els.prevEpisode) {
+    els.prevEpisode.disabled = true;
+  }
+  if (els.nextEpisode) {
+    els.nextEpisode.disabled = true;
+  }
+  setStatus(direction < 0 ? "Carregando episodio anterior..." : "Carregando proximo episodio...", "ok");
+  try {
+    const episodeGroup = await getAdjacentEpisodeGroup(direction);
+    if (!episodeGroup) {
+      setStatus(direction < 0 ? "Nao ha episodio anterior." : "Nao ha proximo episodio.", "error");
+      updateEpisodeNav();
+      return;
+    }
+    await playSeriesEpisodeGroup(episodeGroup);
+    setStatus(`Reproduzindo ${episodeCode(episodeGroup)}.`, "ok");
+  } catch (error) {
+    setStatus(error.message || `Nao foi possivel carregar o ${previousLabel}.`, "error");
+    updateEpisodeNav();
+  }
+}
+
 function watchedEpisodeKey(episode) {
   return `${selectedSeriesKey}:${episode.season}:${episode.episode}`;
 }
@@ -3466,6 +3793,7 @@ function showEpisodeOptionsModal(episode) {
       }
       hideEpisodeOptionsModal();
       scrollPlayerIntoView();
+      setActiveSeriesPlayback(entry, episode);
       startStream(entry.url, entry).catch(showStreamError);
     });
     els.episodeModalOptions.appendChild(button);
@@ -3596,6 +3924,16 @@ els.episodeModal.addEventListener("click", (event) => {
     hideEpisodeOptionsModal();
   }
 });
+if (els.prevEpisode) {
+  els.prevEpisode.addEventListener("click", () => {
+    playAdjacentEpisode(-1).catch((error) => setStatus(error.message, "error"));
+  });
+}
+if (els.nextEpisode) {
+  els.nextEpisode.addEventListener("click", () => {
+    playAdjacentEpisode(1).catch((error) => setStatus(error.message, "error"));
+  });
+}
 
 let searchTimer = null;
 els.entrySearch.addEventListener("input", () => {

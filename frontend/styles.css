@@ -1971,6 +1971,36 @@ img.entry-logo {
   width: 100%;
 }
 
+.episode-nav {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: center;
+  margin-top: 0.85rem;
+}
+
+.episode-nav[hidden] {
+  display: none;
+}
+
+.episode-nav-label {
+  color: #cbd5e1;
+  flex: 1 1 160px;
+  font-size: 0.92rem;
+  min-width: 0;
+  text-align: center;
+}
+
+.episode-nav-button {
+  flex: 0 0 auto;
+  min-width: 7.5rem;
+}
+
+.episode-nav-button:disabled {
+  opacity: 0.45;
+}
+
 .player-actions {
   align-items: center;
   display: flex;

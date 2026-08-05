@@ -158,6 +158,11 @@
           </div>
         </div>
         <video id="video" controls playsinline preload="auto"></video>
+        <div id="episode-nav" class="episode-nav" hidden>
+          <button id="prev-episode" class="ghost episode-nav-button" type="button" disabled>Anterior</button>
+          <span id="episode-nav-label" class="episode-nav-label"></span>
+          <button id="next-episode" class="ghost episode-nav-button" type="button" disabled>Próximo</button>
+        </div>
         <div id="proxy-url" class="proxy-url" hidden></div>
       </section>
 
@@ -209,6 +214,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.7"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
-    <script src="/app.js?v=20260613-series-search-fix"></script>
+    <script src="/app.js?v=20260616-episode-nav"></script>
   </body>
 </html>

@@ -89,6 +89,27 @@ def _playback_mode() -> str:
     return mode
 
 
+def _public_access_enabled() -> bool:
+    return _env_enabled("PUBLIC_ACCESS_ENABLED", False)
+
+
+def _public_access_auth() -> Dict:
+    user = {
+        "id": "__public__",
+        "email": "public@stream.local",
+        "name": "Acesso público",
+        "max_screens": 0,
+        "allow_adult_content": True,
+        "active": True,
+        "is_admin": False,
+        "access_expires_at": 0,
+        "catalog_access_mode": "full",
+        "catalog_allowed_terms": [],
+        "catalog_featured_sections": [],
+    }
+    return {"user": user, "session_id": "__public__", "public_access": True}
+
+
 def _playlist_id(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -2648,6 +2669,20 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def _handle_auth_me(self) -> None:
         auth = self._require_auth()
         user = auth["user"]
+        if auth.get("public_access"):
+            self._send_json(
+                200,
+                {
+                    "user": user,
+                    "session": {
+                        "id": auth["session_id"],
+                        "heartbeat_interval_seconds": 0,
+                        "active_sessions": 0,
+                    },
+                    "public_access": True,
+                },
+            )
+            return
         self._send_json(
             200,
             {
@@ -2662,21 +2697,33 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_auth_heartbeat(self) -> None:
         auth = self._require_auth()
+        if auth.get("public_access"):
+            self._send_json(200, {"status": "ok", "active_sessions": 0})
+            return
         response = self.server.auth_store.heartbeat(auth["user"]["id"], auth["session_id"])
         headers = {"Set-Cookie": self._auth_cookie_header(response["token"], self.server.auth_store._session_ttl_seconds())} if response.get("token") else {}
         self._send_json(200, response, extra_headers=headers)
 
     def _handle_auth_logout(self) -> None:
         auth = self._require_auth()
+        if auth.get("public_access"):
+            self._send_json(200, {"status": "logged_out"}, extra_headers={"Set-Cookie": self._clear_auth_cookie_header()})
+            return
         self.server.auth_store.logout(auth["user"]["id"], auth["session_id"])
         self._send_json(200, {"status": "logged_out"}, extra_headers={"Set-Cookie": self._clear_auth_cookie_header()})
 
     def _handle_user_state_get(self) -> None:
         auth = self._require_auth()
+        if auth.get("public_access"):
+            self._send_json(200, {"favorites": [], "watched_episodes": {}})
+            return
         self._send_json(200, self.server.auth_store.get_user_state(auth["user"]["id"]))
 
     def _handle_user_state_update(self) -> None:
         auth = self._require_auth()
+        if auth.get("public_access"):
+            self._send_json(200, {"favorites": [], "watched_episodes": {}})
+            return
         payload = self._read_json()
         favorites = payload.get("favorites") if isinstance(payload.get("favorites"), list) else None
         watched = payload.get("watched_episodes") if isinstance(payload.get("watched_episodes"), dict) else None
@@ -2734,7 +2781,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._send_json_error(500, str(exc))
 
     def _handle_config(self) -> None:
-        self._send_json(200, {"playback_mode": _playback_mode()})
+        self._send_json(200, {"playback_mode": _playback_mode(), "public_access_enabled": _public_access_enabled()})
 
     def _handle_trial_catalog(self) -> None:
         auth = self._require_auth()
@@ -3512,6 +3559,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         raise AuthError("Conteudo bloqueado nesta versao de teste.", 403)
 
     def _require_auth(self) -> Dict:
+        if _public_access_enabled():
+            return _public_access_auth()
         auth_header = self.headers.get("Authorization", "")
         token = ""
         if auth_header.startswith("Bearer "):
