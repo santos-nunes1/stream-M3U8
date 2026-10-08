@@ -1,14 +1,10 @@
 (function () {
   var API_BASE = "https://app.streamcorsario.com";
-  var STORAGE_TOKEN = "sc_tv_token";
-  var STORAGE_DEVICE = "sc_tv_device";
   var app = document.querySelector("#app");
   var video = document.querySelector("#player");
   var state = {
-    token: localStorage.getItem(STORAGE_TOKEN) || "",
-    deviceId: localStorage.getItem(STORAGE_DEVICE) || createDeviceId(),
-    screen: "login",
-    stack: ["login"],
+    screen: "home",
+    stack: ["home"],
     kind: "tv",
     group: "",
     query: "",
@@ -20,20 +16,8 @@
     channels: [],
     message: "",
     draftQuery: "",
-    accessDraft: "",
     activeStreamId: "",
   };
-
-  localStorage.setItem(STORAGE_DEVICE, state.deviceId);
-
-  function createDeviceId() {
-    var bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    bytes[0] = (bytes[0] | 2) & 254;
-    return Array.prototype.map.call(bytes, function (value) {
-      return value.toString(16).padStart(2, "0");
-    }).join(":").toUpperCase();
-  }
 
   function esc(value) {
     return String(value).replace(/[&<>"']/g, function (char) {
@@ -43,19 +27,6 @@
 
   function button(label, action, extra) {
     return '<button class="focusable" data-action="' + action + '" ' + (extra || "") + ">" + esc(label) + "</button>";
-  }
-
-  function accessHash(value) {
-    var raw = String(value || "").trim();
-    if (!raw) return "";
-    try {
-      var url = new URL(raw);
-      var parts = url.pathname.split("/").filter(Boolean);
-      if (parts[0] === "access" || parts[0] === "u") return decodeURIComponent(parts[1] || "");
-      return url.searchParams.get("access") || url.searchParams.get("token") || raw;
-    } catch (ignore) {
-      return raw;
-    }
   }
 
   function openScreen(name) {
@@ -81,69 +52,18 @@
     var controller = new AbortController();
     var timer = setTimeout(function () { controller.abort(); }, 30000);
     try {
-      var headers = { "Content-Type": "application/json" };
-      if (state.token) headers.Authorization = "Bearer " + state.token;
       var response = await fetch(API_BASE + path, {
         method: options && options.method ? options.method : "GET",
-        headers: headers,
+        headers: { "Content-Type": "application/json" },
         body: options && options.body ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       });
       var payload = await response.json();
-      if (response.status === 401) {
-        state.token = "";
-        localStorage.removeItem(STORAGE_TOKEN);
-        state.stack = ["login"];
-        state.screen = "login";
-        state.message = payload.error || "Entre de novo com o link de acesso.";
-        render();
-        throw new Error(state.message);
-      }
       if (!response.ok && response.status !== 202) throw new Error(payload.error || "O serviço não respondeu.");
       return payload;
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  async function login() {
-    var hash = accessHash(state.accessDraft);
-    if (!hash) {
-      state.message = "Cole o link de acesso.";
-      render();
-      return;
-    }
-    state.message = "Entrando...";
-    render();
-    try {
-      var payload = await api("/api/auth/link-login", {
-        method: "POST",
-        body: { access_hash: hash, device_name: "Smart TV", device_id: state.deviceId },
-      });
-      state.token = payload.token;
-      localStorage.setItem(STORAGE_TOKEN, state.token);
-      state.accessDraft = "";
-      state.message = "";
-      state.stack = ["home"];
-      state.screen = "home";
-      startHeartbeat();
-    } catch (error) {
-      state.message = error.name === "AbortError" ? "O serviço não respondeu." : error.message;
-    }
-    render();
-  }
-
-  function startHeartbeat() {
-    if (state.heartbeat) return;
-    state.heartbeat = setInterval(function () {
-      if (!state.token) return;
-      api("/api/auth/heartbeat", { method: "POST", body: {} }).then(function (payload) {
-        if (payload.token) {
-          state.token = payload.token;
-          localStorage.setItem(STORAGE_TOKEN, state.token);
-        }
-      }).catch(function () {});
-    }, 30000);
   }
 
   async function loadCatalog() {
@@ -174,7 +94,7 @@
       state.screen = "channels";
       if (state.stack[state.stack.length - 1] !== "channels") state.stack.push("channels");
     } catch (error) {
-      state.message = error.message;
+      state.message = error.name === "AbortError" ? "O serviço não respondeu." : error.message;
     }
     render();
   }
@@ -246,29 +166,18 @@
     }
     video.removeAttribute("src");
     video.load();
-    if (state.activeStreamId && state.token) {
+    if (state.activeStreamId) {
       api("/stream/stop", { method: "POST", body: { stream_id: state.activeStreamId } }).catch(function () {});
       state.activeStreamId = "";
     }
   }
 
   function render() {
-    if (state.screen === "login") renderLogin();
-    else if (state.screen === "home") renderHome();
+    if (state.screen === "home") renderHome();
     else if (state.screen === "channels") renderChannels();
     else if (state.screen === "search") renderSearch();
     var focusable = app.querySelector(".focusable");
     if (focusable) focusable.focus();
-  }
-
-  function renderLogin() {
-    app.innerHTML = "<h1>Stream Corsário TV</h1>"
-      + "<p>Cole o link de acesso. A programação e o vídeo vêm de app.streamcorsario.com.</p>"
-      + '<input id="access-input" class="focusable" value="' + esc(state.accessDraft) + '" placeholder="https://app.streamcorsario.com/access/..." />'
-      + '<p class="status">' + esc(state.message) + "</p>"
-      + '<div class="actions">' + button("Entrar", "login") + "</div>";
-    var input = app.querySelector("#access-input");
-    input.addEventListener("input", function () { state.accessDraft = input.value; });
   }
 
   function renderHome() {
@@ -279,7 +188,6 @@
       + button("Filmes", "kind", 'data-kind="movies"')
       + button("Séries", "kind", 'data-kind="series"')
       + button("Buscar", "search")
-      + button("Sair", "logout")
       + "</div>";
   }
 
@@ -319,7 +227,7 @@
       render();
       return;
     }
-    if (code === 461 || code === 10009 || event.key === "Escape" || (event.key === "Backspace" && state.screen !== "login")) {
+    if (code === 461 || code === 10009 || event.key === "Escape" || event.key === "Backspace") {
       event.preventDefault();
       goBack();
     }
@@ -329,15 +237,6 @@
     var target = event.target.closest("[data-action]");
     if (!target) return;
     var action = target.dataset.action;
-    if (action === "login") login();
-    if (action === "logout") {
-      state.token = "";
-      localStorage.removeItem(STORAGE_TOKEN);
-      state.stack = ["login"];
-      state.screen = "login";
-      state.message = "";
-      render();
-    }
     if (action === "kind") {
       state.kind = target.dataset.kind;
       state.group = "";
@@ -387,10 +286,5 @@
     if (action === "play") play(state.channels[Number(target.dataset.index)] || {});
   }
 
-  if (state.token) {
-    state.stack = ["home"];
-    state.screen = "home";
-    startHeartbeat();
-  }
   render();
 })();

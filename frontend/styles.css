@@ -1119,6 +1119,12 @@ img.favorite-shortcut-logo {
   box-shadow: none;
 }
 
+.tv-quick-link.active {
+  background: rgba(247, 193, 92, 0.16);
+  border-color: rgba(247, 193, 92, 0.72);
+  color: #fff7e6;
+}
+
 .tv-quick-link img {
   background: rgba(255, 255, 255, 0.85);
   border-radius: 50%;

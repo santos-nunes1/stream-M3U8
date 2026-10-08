@@ -1,8 +1,9 @@
 Stream Corsário TV
 ===================
 
-Aplicativo instalado na smart TV. Ele não guarda playlist nem sobe servidor.
-Login, catálogo e vídeo vêm do Docker em https://app.streamcorsario.com.
+Aplicativo instalado na smart TV. Ao abrir, mostra Ao vivo, Filmes e Séries.
+Não pede link, playlist nem configuração. Catálogo e vídeo vêm do Docker em
+https://app.streamcorsario.com.
 
 Instalação
 ----------
@@ -11,6 +12,4 @@ Empacote a pasta tv/app e instale na TV:
 - Samsung: Tizen Studio, modo desenvolvedor, pacote .wgt a partir de config.xml.
 - LG: webOS TV CLI, ares-package e ares-install.
 
-Na TV, cole o mesmo link de acesso usado no site e escolha Entrar.
-Ao vivo, Filmes e Séries são lidos do servidor. O play abre o vídeo pelo proxy
-do Docker, no player da TV.
+Abra o aplicativo. O play usa o proxy do Docker no player da TV.

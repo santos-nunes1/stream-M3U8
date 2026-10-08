@@ -95,6 +95,7 @@ let categoryInteracted = false;
 let dailyGamesCatalogRequested = false;
 let dailyGameShortcutEntries = [];
 let worldCupCatalogRequested = false;
+let selectedSeriesCatalog = null;
 let worldCupShortcutEntries = [];
 let realityShortcutEntries = [];
 let dailyGameShortcutLoadPromise = null;
@@ -2304,7 +2305,17 @@ function updatePlaylistCacheModal(job) {
   hideDownloadProgress();
 }
 
+function clearSeriesCatalog() {
+  selectedSeriesCatalog = null;
+  if (els.entrySearch) {
+    els.entrySearch.placeholder = "Digite canal, filme ou série";
+  }
+}
+
 function requestCategoryForQuery(query, group = "") {
+  if (selectedSeriesCatalog) {
+    return "series";
+  }
   if (query) {
     return "all";
   }
@@ -2317,9 +2328,18 @@ function requestCategoryForQuery(query, group = "") {
   return selectedCategory;
 }
 
+function searchQueryForRequest() {
+  const typed = els.entrySearch.value.trim();
+  if (!selectedSeriesCatalog) {
+    return typed;
+  }
+  const scope = selectedSeriesCatalog.search.trim();
+  return typed ? `${scope} ${typed}` : scope;
+}
+
 function currentPlaylistFilters({ offset = 0, limit = PAGE_SIZE } = {}) {
-  const query = els.entrySearch.value.trim();
-  const group = query ? "" : els.groupFilter.value;
+  const query = searchQueryForRequest();
+  const group = els.entrySearch.value.trim() ? "" : els.groupFilter.value;
   return {
     category: requestCategoryForQuery(query, group),
     group,
@@ -2398,7 +2418,13 @@ async function fetchPlaylistPage({ reset = true } = {}) {
     reset,
   });
   if (reset) {
-    setPlaylistLoading(filters.query ? `Buscando "${filters.query}"...` : "Atualizando resultados...");
+    const typedQuery = els.entrySearch.value.trim();
+    const loadingLabel = selectedSeriesCatalog
+      ? (typedQuery
+        ? `Buscando "${typedQuery}" em ${selectedSeriesCatalog.name}...`
+        : `Carregando ${selectedSeriesCatalog.name}...`)
+      : (filters.query ? `Buscando "${filters.query}"...` : "Atualizando resultados...");
+    setPlaylistLoading(loadingLabel);
   } else {
     els.loadMore.disabled = true;
     els.loadMore.textContent = "Carregando...";
@@ -2682,10 +2708,7 @@ async function loadDailyGameShortcuts() {
       offset: 0,
       limit: 120,
     };
-    const [dailyData, worldCupData] = await Promise.all([
-      postJson(playlistEndpoint, { ...basePayload, category: "daily_games" }),
-      postJson(playlistEndpoint, { ...basePayload, category: "world_cup" }),
-    ]);
+    const dailyData = await postJson(playlistEndpoint, { ...basePayload, category: "daily_games" });
     const uniqueFootballEntries = (entries, extraFilter = () => true) => {
       const seen = new Set();
       return (entries || []).filter(isFootballGameShortcut).filter(extraFilter).filter((entry) => {
@@ -2698,10 +2721,8 @@ async function loadDailyGameShortcuts() {
       });
     };
     dailyGameShortcutEntries = uniqueFootballEntries(dailyData.entries);
-    worldCupShortcutEntries = uniqueFootballEntries(worldCupData.entries, isNationalTeamGame);
     dailyGameShortcutCacheKey = cacheKey;
     renderDailyGameQuickLinks();
-    renderWorldCupQuickLinks();
   })();
   try {
     await dailyGameShortcutLoadPromise;
@@ -2836,7 +2857,7 @@ function renderSeriesStreamerLinks() {
       <span class="tv-quick-title">Filtrar séries por streamer</span>
       <div class="tv-quick-list">
         ${SERIES_STREAMER_LINKS.map((streamer) => `
-          <button class="tv-quick-link streamer-quick-link" type="button" data-channel="${escapeHtml(streamer.name)}" data-search="${escapeHtml(streamer.search)}">
+          <button class="tv-quick-link streamer-quick-link${selectedSeriesCatalog?.search === streamer.search ? " active" : ""}" type="button" data-channel="${escapeHtml(streamer.name)}" data-search="${escapeHtml(streamer.search)}">
             <img src="${tvQuickLogoUrl(streamer.domain)}" alt="" loading="lazy" />
             <span>${escapeHtml(streamer.name)}</span>
           </button>
@@ -2954,8 +2975,11 @@ function renderEntries() {
 }
 
 function shouldShowPlaylistResults() {
-  if (isTrialUser() && !els.entrySearch.value.trim() && !selectedSeriesKey) {
+  if (isTrialUser() && !els.entrySearch.value.trim() && !selectedSeriesKey && !selectedSeriesCatalog) {
     return false;
+  }
+  if (selectedSeriesCatalog) {
+    return true;
   }
   if (isTvAwaitingSearch() || isDailyGamesAwaitingSearch() || isWorldCupAwaitingSelection()) {
     return false;
@@ -3992,6 +4016,14 @@ els.entrySearch.addEventListener("input", () => {
   }
   clearTimeout(searchTimer);
   const query = els.entrySearch.value.trim();
+  if (!query && selectedSeriesCatalog) {
+    setStatus(`Catálogo ${selectedSeriesCatalog.name}. Digite um título para buscar só nele.`);
+    setPlaylistLoading(`Carregando ${selectedSeriesCatalog.name}...`);
+    searchTimer = setTimeout(() => {
+      fetchPlaylistPage({ reset: true }).catch((error) => setStatus(error.message, "error"));
+    }, SEARCH_DEBOUNCE_MS);
+    return;
+  }
   if (!query) {
     if (isTvAwaitingSearch()) {
       setStatus("Pesquise um canal para exibir resultados de TV.");
@@ -4024,13 +4056,16 @@ els.entrySearch.addEventListener("input", () => {
     return;
   }
   if (query.length < MIN_SEARCH_QUERY_LENGTH) {
+    if (selectedSeriesCatalog) {
+      return;
+    }
     playlistRequestSeq += 1;
     setStatus(`Digite pelo menos ${MIN_SEARCH_QUERY_LENGTH} caracteres para buscar.`);
     renderInitialCollapsedView();
     return;
   }
-  setStatus(query ? "Buscando na playlist..." : "Limpando busca...");
-  setPlaylistLoading(query ? `Buscando "${query}"...` : "Atualizando resultados...");
+  setStatus(selectedSeriesCatalog ? `Buscando "${query}" em ${selectedSeriesCatalog.name}...` : "Buscando na playlist...");
+  setPlaylistLoading(selectedSeriesCatalog ? `Buscando "${query}" em ${selectedSeriesCatalog.name}...` : `Buscando "${query}"...`);
   searchTimer = setTimeout(() => {
     fetchPlaylistPage({ reset: true }).catch((error) => setStatus(error.message, "error"));
   }, SEARCH_DEBOUNCE_MS);
@@ -4047,6 +4082,7 @@ els.groupFilter.addEventListener("change", () => {
     return;
   }
   selectedCategory = "all";
+  clearSeriesCatalog();
   dailyGamesCatalogRequested = false;
   worldCupCatalogRequested = false;
   els.entrySearch.value = "";
@@ -4059,6 +4095,7 @@ els.categoryFilters.forEach((button) => {
     selectedCategory = button.dataset.category;
     resetSelectedSeries();
     resetMovieCollection();
+    clearSeriesCatalog();
     dailyGamesCatalogRequested = false;
     worldCupCatalogRequested = false;
     categoryInteracted = true;
@@ -4089,7 +4126,9 @@ els.categoryFilters.forEach((button) => {
       loadDailyGameShortcuts();
       return;
     }
-    setStatus("Digite um titulo para buscar nesta categoria.");
+    setStatus(selectedCategory === "series"
+      ? "Escolha um catálogo, como Netflix, e busque o título dentro dele."
+      : "Digite um titulo para buscar nesta categoria.");
     renderInitialCollapsedView();
   });
 });
@@ -4205,11 +4244,24 @@ if (els.seriesStreamerLinks) {
     dailyGamesCatalogRequested = false;
     worldCupCatalogRequested = false;
     categoryInteracted = true;
-    els.entrySearch.value = search;
+    if (selectedSeriesCatalog?.search === search) {
+      clearSeriesCatalog();
+      els.entrySearch.value = "";
+      els.groupFilter.value = "";
+      renderSeriesStreamerLinks();
+      setStatus("Escolha um catálogo, como Netflix, e busque o título dentro dele.");
+      renderInitialCollapsedView();
+      return;
+    }
+    selectedSeriesCatalog = { name: streamer, search };
+    els.entrySearch.value = "";
+    els.entrySearch.placeholder = `Buscar em ${streamer}`;
     els.groupFilter.value = "";
     els.categoryFilters.forEach((filter) => filter.classList.toggle("active", filter.dataset.category === "series"));
+    renderSeriesStreamerLinks();
     updateQuickLinksVisibility();
-    setPlaylistLoading(`Buscando séries de ${streamer}...`);
+    setStatus(`Catálogo ${streamer}. Digite um título para buscar só nele.`);
+    setPlaylistLoading(`Carregando ${streamer}...`);
     fetchPlaylistPage({ reset: true }).catch((error) => setStatus(error.message, "error"));
   });
 }
