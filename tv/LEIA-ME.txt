@@ -1,15 +1,28 @@
 Stream Corsário TV
 ===================
 
-Aplicativo instalado na smart TV. Ao abrir, mostra Ao vivo, Filmes e Séries.
-Não pede link, playlist nem configuração. Catálogo e vídeo vêm do Docker em
+Aplicativo para Android TV, Google TV e Fire TV. A instalação é só o arquivo
+tv/StreamCorsarioTV.apk. Não usa adb, computador nem outra loja.
+
+Ao abrir, mostra Ao vivo, Filmes e Séries. Catálogo e vídeo vêm do Docker em
 https://app.streamcorsario.com.
 
-Instalação
-----------
-Empacote a pasta tv/app e instale na TV:
+Instalar na TV
+--------------
+1. Copie StreamCorsarioTV.apk para o pen drive.
+2. Na TV, permita instalar aplicativos de origem desconhecida.
+3. Abra o gerenciador de arquivos, selecione o APK e confirme.
+4. Abra Stream Corsário TV na lista de aplicativos.
 
-- Samsung: Tizen Studio, modo desenvolvedor, pacote .wgt a partir de config.xml.
-- LG: webOS TV CLI, ares-package e ares-install.
+Teste com adb
+-------------
+Só para testar a partir do Mac. Não faz parte da instalação na TV.
+O adb é o do Android Studio, não o pacote pip.
 
-Abra o aplicativo. O play usa o proxy do Docker no player da TV.
+~/Library/Android/sdk/platform-tools/adb connect IP_DA_TV
+~/Library/Android/sdk/platform-tools/adb install -r tv/StreamCorsarioTV.apk
+
+Para gerar o APK de novo:
+
+cd tv/android
+./gradlew assembleRelease

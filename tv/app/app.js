@@ -137,6 +137,10 @@
 
   function playUrl(url) {
     document.body.classList.add("playing");
+    if (window.AndroidPlayer && AndroidPlayer.play) {
+      AndroidPlayer.play(url);
+      return;
+    }
     if (window.webapis && webapis.avplay) {
       try {
         var player = webapis.avplay;
@@ -160,6 +164,9 @@
 
   function stopPlayback() {
     document.body.classList.remove("playing");
+    if (window.AndroidPlayer && AndroidPlayer.stop && !state.stoppingFromAndroid) {
+      AndroidPlayer.stop();
+    }
     if (window.webapis && webapis.avplay) {
       try { webapis.avplay.stop(); } catch (ignore) {}
       try { webapis.avplay.close(); } catch (ignore) {}
@@ -285,6 +292,12 @@
     }
     if (action === "play") play(state.channels[Number(target.dataset.index)] || {});
   }
+
+  window.__tvStopFromAndroid = function () {
+    state.stoppingFromAndroid = true;
+    stopPlayback();
+    state.stoppingFromAndroid = false;
+  };
 
   render();
 })();

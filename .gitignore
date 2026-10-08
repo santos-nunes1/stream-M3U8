@@ -7,6 +7,11 @@ __pycache__/
 data/*
 !data/.gitkeep
 tv/data/
+tv/android/.gradle/
+tv/android/build/
+tv/android/app/build/
+tv/android/.idea/
+tv/android/local.properties
 *.sqlite
 *.sqlite3
 *.sqlite3-*
