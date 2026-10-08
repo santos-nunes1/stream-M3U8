@@ -1,0 +1,11 @@
+{
+  "id": "com.streamcorsario.tv",
+  "version": "1.0.0",
+  "vendor": "Stream Corsario",
+  "type": "web",
+  "main": "index.html",
+  "title": "Stream Corsário TV",
+  "icon": "icon.png",
+  "largeIcon": "icon.png",
+  "disableBackHistoryAPI": true
+}

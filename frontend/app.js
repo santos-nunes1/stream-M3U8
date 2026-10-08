@@ -2427,12 +2427,25 @@ async function fetchPlaylistPage({ reset = true } = {}) {
     hasMoreEntries = Boolean(data.has_more);
     allEntries = reset ? data.entries || [] : allEntries.concat(data.entries || []);
     allSeriesGroups = reset ? data.series_groups || [] : allSeriesGroups.concat(data.series_groups || []);
+    if (
+      reset
+      && selectedCategory === "series"
+      && filters.query
+      && !allSeriesGroups.length
+      && allEntries.length
+    ) {
+      allSeriesGroups = seriesGroupsFromEntries(allEntries);
+    }
     if (data.groups) {
       populateGroups(data.groups);
     }
     updateCategoryCounts(data.counts || {});
     renderEntries();
-    setStatus(filters.query ? `${totalEntries} resultado(s) para "${filters.query}".` : `${totalEntries} item(ns) em ${categoryLabel(selectedCategory)}.`, "ok");
+    if (data.search_hint) {
+      setStatus(data.search_hint, "error");
+    } else {
+      setStatus(filters.query ? `${totalEntries} resultado(s) para "${filters.query}".` : `${totalEntries} item(ns) em ${categoryLabel(selectedCategory)}.`, "ok");
+    }
     if (reset && (filters.query || filters.group || selectedCategory === "series" || selectedMovieCollectionOpen)) {
       scrollResultsIntoView();
     }
@@ -2959,6 +2972,40 @@ function renderSearchPrompt() {
 
 function renderInitialCollapsedView() {
   renderSearchPrompt();
+}
+
+function seriesGroupsFromEntries(entries) {
+  const groups = new Map();
+  (entries || []).forEach((entry) => {
+    if (entry.category !== "series" || !entry.series_key) {
+      return;
+    }
+    const season = entry.season_number || "0";
+    const existing = groups.get(entry.series_key);
+    if (!existing) {
+      groups.set(entry.series_key, {
+        series_key: entry.series_key,
+        title: entry.series_title || entry.title || "Serie",
+        logo: entry.logo || "",
+        logo_candidates: entry.logo_candidates || [],
+        group: entry.group || "",
+        total_episodes: 0,
+        seasons: {},
+      });
+    }
+    const summary = groups.get(entry.series_key);
+    if (!summary.logo && entry.logo) {
+      summary.logo = entry.logo;
+    }
+    summary.total_episodes += 1;
+    const seasonSummary = summary.seasons[season] || { season, episode_count: 0 };
+    seasonSummary.episode_count += 1;
+    summary.seasons[season] = seasonSummary;
+  });
+  return Array.from(groups.values()).map((summary) => ({
+    ...summary,
+    seasons: Object.values(summary.seasons).sort((a, b) => Number(a.season || 0) - Number(b.season || 0)),
+  }));
 }
 
 function seriesGroupFromEntry(entry) {

@@ -43,7 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DEFAULT_PRELOADED_PLAYLIST_PATH = PROJECT_ROOT / "data" / "preloaded_playlist.m3u"
 SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
-PLAYLIST_CATALOG_CACHE_VERSION = 17
+PLAYLIST_CATALOG_CACHE_VERSION = 18
 SEARCH_PREFIX_MIN_LENGTH = 2
 SEARCH_PREFIX_MAX_LENGTH = 8
 ADMIN_USER_ID = "__admin__"
@@ -228,6 +228,57 @@ POPULAR_SERIES_ALIASES = [
     ("Bridgerton", ("bridgerton",)),
     ("Peaky Blinders", ("peaky blinders",)),
 ]
+
+SERIES_LOOKUP_ALIASES = (
+    {
+        "id": "hbo_girls",
+        "match_queries": (
+            "girls hbo",
+            "girls max",
+            "hbo girls",
+            "hbo max girls",
+            "garotas hbo",
+            "garotas max",
+            "girls hbo max",
+        ),
+        "series_title": "girls",
+        "required_context_terms": ("hbo", "max"),
+        "excluded_title_terms": (
+            "dorm",
+            "dope",
+            "gilmore",
+            "good",
+            "paper",
+            "play",
+            "band",
+            "school",
+            "street",
+            "malvadas",
+            "onibus",
+            "californication",
+            "wanted",
+            "monster",
+            "super",
+            "back",
+            "rawabi",
+        ),
+        "not_found_hint": (
+            "A serie Girls (HBO, 2012-2017) nao aparece na playlist do provedor neste momento. "
+            "Tente atualizar a playlist mais tarde ou confira titulos parecidos como Girls Dorm e Dope Girls."
+        ),
+    },
+)
+
+
+def _series_lookup_alias_for_query(query: str) -> Optional[Dict]:
+    normalized = _normalize_search_value(query.strip())
+    if not normalized:
+        return None
+    for alias in SERIES_LOOKUP_ALIASES:
+        for candidate in alias.get("match_queries", ()):
+            if normalized == _normalize_search_value(candidate):
+                return alias
+    return None
 
 
 class PlaylistCatalog:
@@ -445,6 +496,32 @@ class PlaylistCatalog:
         access_seed: str = "",
     ) -> Dict:
         query = _normalize_search_value(query.strip())
+        lookup_alias = _series_lookup_alias_for_query(query) if query and not series_key else None
+        if lookup_alias and category in {"all", "series"} and not group:
+            alias_indices = self._indices_for_series_lookup(lookup_alias, include_adult)
+            if alias_indices:
+                return self._series_group_response(
+                    playlist_id,
+                    alias_indices,
+                    offset,
+                    limit,
+                    include_adult,
+                    query=query,
+                )
+            hint = lookup_alias.get("not_found_hint") or ""
+            metadata = self.metadata if include_adult else self._metadata_without_adult()
+            return {
+                "playlist_id": playlist_id,
+                "entries": [],
+                "series_groups": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+                "counts": metadata["counts"],
+                "groups": self._global_groups(include_adult),
+                "search_hint": hint,
+            }
         if category in {"daily_games", "world_cup", "reality"} and not group and not query and not series_key:
             allowed_indices = set() if allowed_terms is not None else None
             category_indices = [
@@ -527,7 +604,7 @@ class PlaylistCatalog:
                 "groups": self._global_groups(include_adult),
             }
         if category == "series" and not series_key:
-            return self._series_group_response(playlist_id, indices, offset, limit, include_adult)
+            return self._series_group_response(playlist_id, indices, offset, limit, include_adult, query=query)
         if query and category == "all" and not series_key and indices and all(
             (self.entries[index].get("category") or "other") == "series" for index in indices
         ):
@@ -781,7 +858,39 @@ class PlaylistCatalog:
         self.allowed_indices_cache[cache_key] = set(allowed)
         return allowed
 
-    def _series_group_response(self, playlist_id: str, indices: List[int], offset: int, limit: int, include_adult: bool) -> Dict:
+    def _indices_for_series_lookup(self, alias: Dict, include_adult: bool) -> List[int]:
+        self._ensure_series_index()
+        target_title = _normalize_search_value(alias.get("series_title") or "")
+        excluded_terms = tuple(_normalize_search_value(term) for term in alias.get("excluded_title_terms", ()))
+        context_terms = tuple(_normalize_search_value(term) for term in alias.get("required_context_terms", ()))
+        matched_indices: List[int] = []
+        for series_key, summary in self.series_summaries.items():
+            title = _normalize_search_value(summary.get("title") or "")
+            title_tokens = SEARCH_TOKEN_RE.findall(title)
+            if title != target_title and title_tokens != ([target_title] if target_title else []):
+                continue
+            if excluded_terms and any(term in title for term in excluded_terms):
+                continue
+            haystack = _normalize_search_value(
+                f"{summary.get('title', '')} {summary.get('group', '')} {' '.join(summary.get('groups', []))}"
+            )
+            if context_terms and not any(term in haystack for term in context_terms):
+                continue
+            series_indices = self.series_indices.get(series_key, [])
+            if not include_adult:
+                series_indices = [index for index in series_indices if index not in self.adult_indices]
+            matched_indices.extend(series_indices)
+        return sorted(set(matched_indices), key=self._series_episode_sort_key)
+
+    def _series_group_response(
+        self,
+        playlist_id: str,
+        indices: List[int],
+        offset: int,
+        limit: int,
+        include_adult: bool,
+        query: str = "",
+    ) -> Dict:
         if offset == 0 and self._looks_like_full_series_listing(indices):
             summaries = self._popular_series_summaries(include_adult, limit)
             if summaries:
@@ -825,13 +934,35 @@ class PlaylistCatalog:
             summary["seasons"] = sorted(seasons.values(), key=lambda item: int(item["season"] or 0))
             summaries.append(summary)
 
-        summaries.sort(
-            key=lambda item: (
+        normalized_query = _normalize_search_value(query or "")
+
+        def _series_group_sort_key(item: Dict) -> Tuple[int, int, int, str]:
+            title = _normalize_search_value(item.get("title") or "")
+            group = _normalize_search_value(item.get("group") or "")
+            haystack = f"{title} {group}"
+            relevance = 50
+            if normalized_query:
+                query_tokens = SEARCH_TOKEN_RE.findall(normalized_query)
+                if title == normalized_query:
+                    relevance = 0
+                elif SEARCH_TOKEN_RE.findall(title) == query_tokens:
+                    relevance = 1
+                elif title.startswith(f"{normalized_query} "):
+                    relevance = 2
+                elif normalized_query in title:
+                    relevance = 3
+                elif all(token in haystack for token in query_tokens):
+                    relevance = 4
+                else:
+                    relevance = 9
+            return (
+                relevance,
                 0 if item.get("logo") else 1,
                 -int(item.get("total_episodes") or 0),
-                _normalize_search_value(f"{item.get('title', '')} {item.get('group', '')}"),
+                haystack,
             )
-        )
+
+        summaries.sort(key=_series_group_sort_key)
         page_start = max(offset, 0)
         page_end = page_start + limit
         metadata = self.metadata if include_adult else self._metadata_for_indices(indices)
@@ -2385,12 +2516,19 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if self.path.startswith("/api/") or self.path.startswith("/auth/"):
             self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         if self.path.endswith(".html") or urllib.parse.urlsplit(self.path).path in {"/", "/admin", "/monitoring"}:
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' https: data:; media-src 'self' blob: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
             )
         super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.end_headers()
 
     def do_GET(self):
         try:
