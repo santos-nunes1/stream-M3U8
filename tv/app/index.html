@@ -6,9 +6,29 @@
     <title>Stream Corsário TV</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
-    <div id="app"></div>
+  <body tabindex="0">
+    <div id="app">
+      <header class="top">
+        <div class="ship-brand">
+          <span class="helm-icon"></span>
+          <span>
+            <strong>Stream Corsário</strong>
+            <small>TV a bordo</small>
+          </span>
+        </div>
+        <p id="hint" class="hint">Setas para mover · OK para escolher · Voltar para retornar</p>
+      </header>
+      <main id="stage"></main>
+    </div>
+    <div id="hud">
+      <span class="helm-icon helm-icon-small"></span>
+      <span>
+        <strong id="hud-title">Reproduzindo</strong>
+        <small>Voltar para parar</small>
+      </span>
+    </div>
     <video id="player" playsinline></video>
+    <script src="$WEBAPIS/webapis/webapis.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
