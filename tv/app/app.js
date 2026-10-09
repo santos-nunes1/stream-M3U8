@@ -10,6 +10,7 @@
   var video = document.querySelector("#player");
   var avObject = document.querySelector("#av-player");
   var groupTimer = 0;
+  var seasonTimer = 0;
   var modeTimer = 0;
   var infoTimer = 0;
   var infoToken = 0;
@@ -412,6 +413,30 @@
     state.column = "1";
     state.itemIndex = best;
     paint();
+    var landed = nodes[best];
+    if (landed && landed.getAttribute("data-action") === "pick-season") {
+      scheduleSeasonLoad();
+    }
+  }
+
+  function scheduleSeasonLoad() {
+    clearTimeout(seasonTimer);
+    seasonTimer = setTimeout(function () {
+      var nodes = columnNodes("1");
+      var node = nodes[state.itemIndex];
+      if (!node || node.getAttribute("data-action") !== "pick-season") {
+        return;
+      }
+      var next = node.getAttribute("data-season") || "";
+      if (String(episodeNumber(next)) === String(episodeNumber(state.season))) {
+        return;
+      }
+      state.season = next;
+      state.offset = 0;
+      state.focusSeason = next;
+      state.focusResults = false;
+      loadItems(false);
+    }, 120);
   }
 
   function openCatalog(id) {
@@ -761,7 +786,7 @@
       } else {
         state.message = state.items.length ? state.total + " títulos" : "Nada neste grupo.";
       }
-      if (state.screen === "search" && state.items.length) {
+      if (state.seriesKey && state.items.length && !state.focusSeason) {
         state.focusResults = true;
       }
       render();
@@ -1221,13 +1246,12 @@
       state.column = "1";
       state.offset = 0;
       if (state.seasons.length > 1) {
-        state.message = state.seasons.length + " temporadas";
-        render();
-        return;
+        state.season = resumeSeasonForSeries(entry.series_key) || String(state.seasons[0].season || "1");
       }
       if (state.seasons.length === 1) {
         state.season = String(state.seasons[0].season || "");
       }
+      state.message = state.seriesTitle || "Abrindo a série...";
       loadItems(false);
       return;
     }
@@ -1524,6 +1548,8 @@
     }
     if (state.picker && state.picker.length) {
       hint.innerHTML = "Dublado vem primeiro · OK reproduz o link escolhido · Voltar fecha a lista";
+    } else if (state.seriesKey) {
+      hint.innerHTML = "Temporadas na fileira de cima · Para baixo entram os episódios · OK reproduz";
     } else if (state.screen === "search") {
       hint.innerHTML = "A busca fica nesta aba · OK no campo abre o teclado · Resultados não mudam de aba";
     } else if (state.catalog) {
@@ -1534,21 +1560,68 @@
       hint.innerHTML = "Voltar volta às abas Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
     }
     paint();
-    if (state.focusResults) {
-      state.focusResults = false;
-      var resultNodes = columnNodes("1");
-      var resultIndex;
-      for (resultIndex = 0; resultIndex < resultNodes.length; resultIndex++) {
-        if (resultNodes[resultIndex].getAttribute("data-action") === "play") {
-          state.itemIndex = resultIndex;
+    if (state.focusSeason) {
+      var wantedSeason = String(episodeNumber(state.focusSeason));
+      state.focusSeason = "";
+      var seasonNodes = columnNodes("1");
+      var seasonIndex;
+      for (seasonIndex = 0; seasonIndex < seasonNodes.length; seasonIndex++) {
+        if (seasonNodes[seasonIndex].getAttribute("data-action") === "pick-season" && String(episodeNumber(seasonNodes[seasonIndex].getAttribute("data-season"))) === wantedSeason) {
+          state.itemIndex = seasonIndex;
           break;
         }
       }
       paint();
+    } else if (state.focusResults) {
+      state.focusResults = false;
+      var resultNodes = columnNodes("1");
+      var resultIndex = focusEpisodeNode(resultNodes);
+      if (resultIndex >= 0) {
+        state.itemIndex = resultIndex;
+        paint();
+      }
     }
-    if (state.screen === "search" && !state.items.length && !state.picker && state.column !== "2") {
+    if (state.screen === "search" && !state.seriesKey && !state.items.length && !state.picker && state.column !== "2") {
       setTimeout(focusSearchField, 60);
     }
+  }
+
+  function resumeSeasonForSeries(seriesKey) {
+    var items = readContinue();
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (items[i].seriesKey === seriesKey && items[i].seasonNumber) {
+        return String(items[i].seasonNumber);
+      }
+    }
+    return "";
+  }
+
+  function focusEpisodeNode(nodes) {
+    var savedSeason = "";
+    var savedEpisode = "";
+    var saved = readContinue();
+    var i;
+    var fallback = -1;
+    for (i = 0; i < saved.length; i++) {
+      if (saved[i].seriesKey === state.seriesKey && !saved[i].finished) {
+        savedSeason = String(episodeNumber(saved[i].seasonNumber));
+        savedEpisode = String(episodeNumber(saved[i].episodeNumber));
+      }
+    }
+    for (i = 0; i < nodes.length; i++) {
+      if (nodes[i].getAttribute("data-action") !== "play") {
+        continue;
+      }
+      if (fallback < 0) {
+        fallback = i;
+      }
+      var entry = state.items[Number(nodes[i].getAttribute("data-index"))] || null;
+      if (entry && savedEpisode && String(episodeNumber(entry.season_number)) === savedSeason && String(episodeNumber(entry.episode_number)) === savedEpisode) {
+        return i;
+      }
+    }
+    return fallback;
   }
 
   function modeButtons() {
@@ -2148,7 +2221,33 @@
     var total = season.episode_count || 0;
     var watched = seasonWatchedCount(state.seriesKey, number);
     var detail = total ? watched + " de " + total + " assistidos" : "Temporada";
-    return '<button type="button" class="poster focusable" data-col="1" data-action="pick-season" data-season="' + esc(number) + '" data-row="' + row + '" data-slot="' + slot + '"><b>' + esc(String(number)) + '</b><span>Temporada ' + esc(String(number)) + " · " + esc(detail) + "</span></button>";
+    var selected = String(episodeNumber(number)) === String(episodeNumber(state.season)) ? " current" : "";
+    return '<button type="button" class="poster focusable' + selected + '" data-col="1" data-action="pick-season" data-season="' + esc(number) + '" data-row="' + row + '" data-slot="' + slot + '"><b>' + esc(String(number)) + '</b><span>Temporada ' + esc(String(number)) + " · " + esc(detail) + "</span></button>";
+  }
+
+  function seriesBoardHtml(rowNum) {
+    var html = '<div id="list" class="poster-grid">';
+    var episodeRow = rowNum;
+    if (state.seasons.length > 1) {
+      html += seasonRowHtml(rowNum);
+      episodeRow = rowNum + 1;
+    }
+    var shelves = seriesEpisodeShelves();
+    var s;
+    var n;
+    for (s = 0; s < shelves.length; s++) {
+      if (!shelves[s].indexes.length) {
+        continue;
+      }
+      html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
+      for (n = 0; n < shelves[s].indexes.length; n++) {
+        var itemIndex = shelves[s].indexes[n];
+        html += posterButton(itemIndex, state.items[itemIndex], episodeRow, n);
+      }
+      episodeRow += 1;
+    }
+    html += "</div>";
+    return html;
   }
 
   function seasonRowHtml(rowNum) {
@@ -2196,29 +2295,29 @@
         html += '<p class="status">' + esc(seriesProgressLabel()) + "</p>";
       }
     }
-    html += '<div id="list" class="poster-grid">';
-    var resume = state.query || state.seriesKey ? [] : visibleContinue();
-    var rowNum = 1;
-    if (resume.length) {
-      html += continueCards(rowNum);
-      rowNum += 1;
-    }
-    var shelves = state.seriesKey ? seriesEpisodeShelves() : (state.query ? [{ title: "Resultados", indexes: allItemIndexes() }] : buildShelves(state.items));
-    if (state.seriesKey && !state.season && state.seasons.length > 1) {
-      html += seasonRowHtml(rowNum);
-      shelves = [];
-    }
-    var s;
-    var n;
-    for (s = 0; s < shelves.length; s++) {
-      html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
-      for (n = 0; n < shelves[s].indexes.length; n++) {
-        var itemIndex = shelves[s].indexes[n];
-        html += posterButton(itemIndex, state.items[itemIndex], rowNum, n);
+    if (state.seriesKey) {
+      html += seriesBoardHtml(0);
+    } else {
+      html += '<div id="list" class="poster-grid">';
+      var resume = state.query ? [] : visibleContinue();
+      var rowNum = 1;
+      if (resume.length) {
+        html += continueCards(rowNum);
+        rowNum += 1;
       }
-      rowNum += 1;
+      var shelves = state.query ? [{ title: "Resultados", indexes: allItemIndexes() }] : buildShelves(state.items);
+      var s;
+      var n;
+      for (s = 0; s < shelves.length; s++) {
+        html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
+        for (n = 0; n < shelves[s].indexes.length; n++) {
+          var itemIndex = shelves[s].indexes[n];
+          html += posterButton(itemIndex, state.items[itemIndex], rowNum, n);
+        }
+        rowNum += 1;
+      }
+      html += "</div>";
     }
-    html += "</div>";
     stage.innerHTML = html;
     var field = document.getElementById("catalog-search");
     if (field) {
@@ -2326,26 +2425,25 @@
   }
 
   function renderSearch() {
+    if (state.seriesKey) {
+      var seriesHtml = '<div class="modes">' + modeButtons() + "</div>";
+      seriesHtml += '<h1 class="shelf-title">' + esc(state.seriesTitle || "Série") + "</h1>";
+      seriesHtml += '<p class="status">' + esc(seriesProgressLabel()) + "</p>";
+      seriesHtml += seriesBoardHtml(0);
+      stage.innerHTML = seriesHtml;
+      return;
+    }
     var html = '<div class="modes">' + modeButtons() + "</div>";
     html += "<h1>Buscar</h1>";
     html += '<p class="status">' + esc(state.message) + "</p>";
     html += '<input id="title-search" class="focusable" data-col="1" data-row="0" data-slot="0" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Digite o título" value="' + esc(state.draftQuery || state.query) + '">';
     html += '<div>' + searchAction("Limpar", "query-clear", 1) + searchAction("Buscar", "query-go", 2) + "</div>";
-    if (state.seriesTitle) {
-      html += '<h1 class="shelf-title">' + esc(state.seriesTitle) + "</h1>";
-      html += '<p class="status">' + esc(seriesProgressLabel()) + "</p>";
-    }
     html += '<div id="list" class="poster-grid">';
-    var shelves = state.seriesKey ? seriesEpisodeShelves() : [{ title: "Resultados", indexes: allItemIndexes() }];
-    var showSeasons = state.seriesKey && !state.season && state.seasons.length > 1;
-    if (state.items.length || showSeasons) {
+    var shelves = [{ title: "Resultados", indexes: allItemIndexes() }];
+    if (state.items.length) {
       var rowNum = 1;
       var s;
       var n;
-      if (showSeasons) {
-        html += seasonRowHtml(rowNum);
-        shelves = [];
-      }
       for (s = 0; s < shelves.length; s++) {
         html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
         for (n = 0; n < shelves[s].indexes.length; n++) {
@@ -2534,17 +2632,19 @@
       return;
     }
     if (action === "pick-season") {
-      state.season = target.getAttribute("data-season") || "";
-      state.itemIndex = 0;
+      var nextSeason = target.getAttribute("data-season") || "";
+      var sameSeason = String(episodeNumber(nextSeason)) === String(episodeNumber(state.season));
+      state.season = nextSeason;
       state.column = "1";
       state.offset = 0;
+      state.focusSeason = "";
       var ready = seriesEpisodeShelves();
-      if (ready[0] && ready[0].indexes.length) {
-        state.message = "Temporada " + state.season;
+      if (sameSeason && ready[0] && ready[0].indexes.length) {
+        state.focusResults = true;
         render();
         return;
       }
-      state.items = [];
+      state.focusResults = true;
       loadItems(false);
       return;
     }
@@ -2650,7 +2750,7 @@
       event.preventDefault();
       if (state.screen === "search") {
         var searchBox = document.getElementById("title-search");
-        if (!state.items.length || (searchBox && document.activeElement === searchBox)) {
+        if (searchBox && document.activeElement === searchBox) {
           submitSearch();
           return;
         }
