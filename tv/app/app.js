@@ -16,6 +16,7 @@
   var infoToken = 0;
   var selectedEl = null;
   var loadToken = 0;
+  var logoFetches = {};
   var failing = false;
   var scrollTops = { groups: 0, list: 0 };
   var MODES = [
@@ -1062,7 +1063,7 @@
     var kept = {
       url: state.watching.url,
       title: state.watching.title,
-      logo: state.watching.logo || "",
+      logo: state.watching.seriesKey && state.seriesLogo ? state.seriesLogo : (state.watching.logo || ""),
       kind: state.watching.kind,
       catalogId: state.watching.catalogId || "",
       group: state.watching.group || "",
@@ -1261,6 +1262,7 @@
     if (entry.series_key && !entry.url) {
       state.seriesKey = entry.series_key;
       state.seriesTitle = entry.title || entry.series_title || "Série";
+      state.seriesLogo = entry.logo || "";
       state.seasons = entry.seasons || [];
       state.season = "";
       state.items = [];
@@ -1288,7 +1290,7 @@
     state.watching = {
       url: entry.url,
       title: state.playingTitle,
-      logo: entry.logo || "",
+      logo: entry.logo || ((entry.series_key || state.seriesKey) ? state.seriesLogo : "") || "",
       kind: entry.series_key || state.seriesKey || entry.category === "series" ? "series" : (entry.kind || state.kind),
       catalogId: state.catalog ? state.catalog.id : (entry.catalogId || catalogIdFor(entry)),
       group: entry.group || "",
@@ -1732,6 +1734,77 @@
     }
     html += "</div>";
     stage.innerHTML = html;
+    ensureContinueLogos(items);
+  }
+
+  function ensureContinueLogos(items) {
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (!items[i].logo && (items[i].seriesKey || items[i].seriesTitle)) {
+        fetchSeriesLogo(items[i]);
+      }
+    }
+  }
+
+  function fetchSeriesLogo(item) {
+    var key = item.seriesKey || item.seriesTitle || item.title;
+    if (!key || logoFetches[key]) {
+      return;
+    }
+    logoFetches[key] = 1;
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "series",
+        group: "",
+        query: item.seriesTitle || item.title || "",
+        series_key: "",
+        season: "",
+        offset: 0,
+        limit: 8,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      if (error || !payload) {
+        return;
+      }
+      var groups = payload.series_groups || [];
+      var logo = "";
+      var i;
+      for (i = 0; i < groups.length; i++) {
+        if (item.seriesKey && groups[i].series_key === item.seriesKey && groups[i].logo) {
+          logo = groups[i].logo;
+        }
+      }
+      if (!logo) {
+        for (i = 0; i < groups.length; i++) {
+          if (groups[i].logo) {
+            logo = groups[i].logo;
+            break;
+          }
+        }
+      }
+      if (!logo) {
+        return;
+      }
+      var all = readContinue();
+      var changed = false;
+      for (i = 0; i < all.length; i++) {
+        var sameSeries = item.seriesKey && all[i].seriesKey === item.seriesKey;
+        var sameUrl = !item.seriesKey && all[i].url === item.url;
+        if ((sameSeries || sameUrl) && all[i].logo !== logo) {
+          all[i].logo = logo;
+          changed = true;
+        }
+      }
+      if (!changed) {
+        return;
+      }
+      writeContinue(all);
+      if (state.kind === "continue" && !(state.picker && state.picker.length)) {
+        render();
+      }
+    });
   }
 
   function continueCards(row) {
@@ -2002,7 +2075,7 @@
     play({
       url: entry.url,
       title: entry.title,
-      logo: entry.logo || "",
+      logo: entry.logo || state.seriesLogo || "",
       group: entry.group || "",
       category: entry.category || "",
       media_kind: entry.media_kind || "",
