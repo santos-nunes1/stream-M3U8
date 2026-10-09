@@ -173,8 +173,9 @@
   }
 
   function paint() {
-    var nodes = state.screen === "search" ? stage.querySelectorAll(".focusable") : columnNodes(state.column);
-    var index = state.screen === "search" ? state.searchIndex : columnIndex(state.column);
+    var searchKeys = state.screen === "search" && !state.items.length;
+    var nodes = searchKeys ? stage.querySelectorAll(".focusable") : columnNodes(state.column);
+    var index = searchKeys ? state.searchIndex : columnIndex(state.column);
     if (!nodes.length) {
       selectedEl = null;
       return;
@@ -185,7 +186,7 @@
     if (index < 0) {
       index = 0;
     }
-    if (state.screen === "search") {
+    if (searchKeys) {
       state.searchIndex = index;
     } else {
       setColumnIndex(state.column, index);
@@ -277,8 +278,12 @@
   }
 
   function move(direction) {
-    if (state.screen === "search") {
+    if (state.screen === "search" && !state.items.length) {
       moveSearch(direction);
+      return;
+    }
+    if (state.screen === "search" && state.column !== "2") {
+      moveSeries(direction);
       return;
     }
     if ((state.kind === "series" || state.kind === "movies") && state.column !== "2") {
@@ -298,7 +303,7 @@
         state.modeIndex = index + 1;
       }
       if (direction === "down") {
-        state.column = state.kind === "series" || state.kind === "movies" ? "1" : "0";
+        state.column = state.screen === "search" || state.kind === "series" || state.kind === "movies" ? "1" : "0";
       }
       paint();
       if (direction === "left" || direction === "right") {
@@ -431,9 +436,20 @@
   function selectKind(kind, stayOnTabs) {
     if (kind === "search") {
       if (!stayOnTabs) {
-        state.draftQuery = state.query;
+        state.catalog = null;
+        state.seriesKey = "";
+        state.seriesTitle = "";
+        state.seasons = [];
+        state.season = "";
+        state.query = "";
+        state.draftQuery = "";
+        state.items = [];
+        state.group = "";
+        state.message = "Digite um título.";
         state.screen = "search";
         state.searchIndex = 0;
+        state.column = "1";
+        state.itemIndex = 0;
         render();
       }
       return;
@@ -528,9 +544,10 @@
   }
 
   function activateCurrent() {
-    var col = state.screen === "search" ? "search" : state.column;
-    var nodes = state.screen === "search" ? stage.querySelectorAll(".focusable") : columnNodes(col);
-    var index = state.screen === "search" ? state.searchIndex : columnIndex(col);
+    var searchKeys = state.screen === "search" && !state.items.length;
+    var col = searchKeys ? "search" : state.column;
+    var nodes = searchKeys ? stage.querySelectorAll(".focusable") : columnNodes(col);
+    var index = searchKeys ? state.searchIndex : columnIndex(col);
     if (nodes[index]) {
       activate(nodes[index]);
     }
@@ -542,10 +559,19 @@
       render();
       return;
     }
-    if (state.screen === "search") {
-      state.screen = "browse";
+    if (state.column !== "2") {
+      var typing = document.getElementById("catalog-search") || document.getElementById("title-search");
+      if (typing && document.activeElement === typing && typing.blur) {
+        typing.blur();
+      }
       state.column = "2";
-      render();
+      state.itemIndex = 0;
+      var list = document.getElementById("list");
+      if (list) {
+        list.scrollTop = 0;
+        scrollTops.list = 0;
+      }
+      paint();
       return;
     }
     if (state.seriesKey) {
@@ -556,6 +582,10 @@
       state.offset = 0;
       state.itemIndex = 0;
       state.column = "1";
+      if (state.screen === "search") {
+        loadSearch();
+        return;
+      }
       loadItems(false);
       return;
     }
@@ -575,6 +605,9 @@
       state.column = "1";
       state.message = "Escolha um streaming";
       render();
+      return;
+    }
+    if (state.screen === "search") {
       return;
     }
     if (state.query || state.group) {
@@ -631,6 +664,10 @@
   }
 
   function loadItems(append) {
+    if (state.screen === "search" && !state.seriesKey && !append) {
+      loadSearch();
+      return;
+    }
     if (state.catalog && !state.seriesKey && !append) {
       loadStreamerCatalog();
       return;
@@ -647,13 +684,13 @@
     api("/api/playlist/preloaded", {
       method: "POST",
       body: {
-        category: state.kind,
+        category: state.seriesKey ? "series" : state.kind,
         group: state.seriesKey ? "" : state.group,
         query: catalogQuery(),
         series_key: state.seriesKey,
         season: state.season,
         offset: requestOffset,
-        limit: 80,
+        limit: state.seriesKey ? 500 : 80,
         browse: "playlist"
       }
     }, function (error, payload) {
@@ -680,10 +717,96 @@
       }
       var batch = payload.series_groups && payload.series_groups.length ? payload.series_groups : (payload.entries || []);
       state.items = append ? state.items.concat(batch) : batch;
+      if (state.seriesKey) {
+        state.items = uniqueEpisodes(state.items);
+      }
       state.total = payload.total || state.items.length;
       state.offset = requestOffset + batch.length;
       state.hasMore = !!payload.has_more;
-      state.message = state.items.length ? state.total + " títulos" : "Nada neste grupo.";
+      if (state.seriesKey) {
+        state.message = state.items.length ? state.items.length + " episódios" : "Nenhum episódio.";
+      } else {
+        state.message = state.items.length ? state.total + " títulos" : "Nada neste grupo.";
+      }
+      if (state.screen === "search" && state.items.length) {
+        state.focusResults = true;
+      }
+      render();
+    });
+  }
+
+  function searchResults(payload) {
+    var groups = payload.series_groups || [];
+    var entries = payload.entries || [];
+    var movies = [];
+    var channels = [];
+    var seenSeries = {};
+    var seriesFromEntries = [];
+    var i;
+    for (i = 0; i < groups.length; i++) {
+      if (groups[i].series_key) {
+        seenSeries[groups[i].series_key] = 1;
+      }
+    }
+    for (i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      var kind = entryKind(entry);
+      if (kind === "series" || entry.series_key) {
+        if (entry.series_key && !seenSeries[entry.series_key]) {
+          seenSeries[entry.series_key] = 1;
+          seriesFromEntries.push({
+            series_key: entry.series_key,
+            title: entry.series_title || entry.title,
+            series_title: entry.series_title || entry.title,
+            logo: entry.logo || "",
+            group: entry.group || "",
+            category: "series"
+          });
+        }
+      } else if (kind === "movies" && !isLiveChannel(entry)) {
+        movies.push(entry);
+      } else if (kind !== "movies") {
+        channels.push(entry);
+      }
+    }
+    return groups.concat(seriesFromEntries).concat(uniqueMovies(movies)).concat(channels);
+  }
+
+  function loadSearch() {
+    var token = ++loadToken;
+    state.message = "Buscando...";
+    var status = stage.querySelector(".status");
+    if (status) {
+      status.innerHTML = esc(state.message);
+    }
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "all",
+        group: "",
+        query: state.query,
+        series_key: "",
+        season: "",
+        offset: 0,
+        limit: 200,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      if (token !== loadToken) {
+        return;
+      }
+      if (error || !payload || payload.status === "loading") {
+        state.message = error ? error.message : "A playlist ainda está carregando.";
+        state.items = [];
+        render();
+        return;
+      }
+      state.catalog = null;
+      state.items = searchResults(payload);
+      state.hasMore = false;
+      state.message = state.items.length ? state.items.length + " títulos" : "Nenhum título encontrado.";
+      state.column = "1";
+      state.focusResults = state.items.length > 0;
       render();
     });
   }
@@ -877,7 +1000,7 @@
           kept.push(batch[i]);
         }
       }
-      state.items = kept;
+      state.items = uniqueMovies(kept);
       state.hasMore = false;
       state.message = kept.length ? kept.length + " filmes" : "Nenhum filme encontrado.";
       render();
@@ -897,7 +1020,7 @@
       if (pending > 0 || token !== loadToken) {
         return;
       }
-      state.items = seriesBatch.concat(movieBatch);
+      state.items = seriesBatch.concat(uniqueMovies(movieBatch));
       state.hasMore = false;
       state.offset = state.items.length;
       if (state.query) {
@@ -1248,16 +1371,28 @@
       list.scrollTop = scrollTops.list || 0;
     }
     if (state.screen === "search") {
-      hint.innerHTML = "Digite no celular ou no teclado da TV · Para baixo vai ao botão · OK busca";
+      hint.innerHTML = "A busca fica nesta aba · OK no campo abre o teclado · Resultados não mudam de aba";
     } else if (state.catalog) {
-      hint.innerHTML = "O campo busca só neste streaming · Setas nos cartazes · OK abre · Voltar sai da busca";
+      hint.innerHTML = "Voltar volta às abas · Setas nos cartazes · OK abre";
     } else if (state.kind === "series") {
       hint.innerHTML = "Escolha o streaming · OK abre o catálogo · Voltar sai";
     } else {
-      hint.innerHTML = "No topo, esquerda e direita mudam Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
+      hint.innerHTML = "Voltar volta às abas Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
     }
     paint();
-    if (state.screen === "search" && state.searchIndex === 0) {
+    if (state.focusResults) {
+      state.focusResults = false;
+      var resultNodes = columnNodes("1");
+      var resultIndex;
+      for (resultIndex = 0; resultIndex < resultNodes.length; resultIndex++) {
+        if (resultNodes[resultIndex].getAttribute("data-action") === "play") {
+          state.itemIndex = resultIndex;
+          break;
+        }
+      }
+      paint();
+    }
+    if (state.screen === "search" && !state.items.length && state.column !== "2") {
       setTimeout(focusSearchField, 60);
     }
   }
@@ -1265,8 +1400,9 @@
   function modeButtons() {
     var modes = "";
     var i;
+    var selectedId = state.screen === "search" ? "search" : state.kind;
     for (i = 0; i < MODES.length; i++) {
-      var current = MODES[i].id === state.kind && MODES[i].id !== "search" ? " current" : "";
+      var current = MODES[i].id === selectedId ? " current" : "";
       modes += '<button type="button" class="mode focusable' + current + '" data-col="2" data-action="mode" data-kind="' + MODES[i].id + '">' + esc(MODES[i].label) + "</button>";
     }
     return modes;
@@ -1326,6 +1462,126 @@
     html += cards;
     html += "</div>";
     stage.innerHTML = html;
+  }
+
+  function episodeNumber(value) {
+    var number = parseInt(value, 10);
+    if (number !== number) {
+      return 0;
+    }
+    return number;
+  }
+
+  function episodeIdentity(entry) {
+    var episode = episodeNumber(entry.episode_number);
+    var season = episodeNumber(entry.season_number);
+    if (!episode) {
+      return "titulo:" + String(entry.title || entry.url || "");
+    }
+    return season + ":" + episode;
+  }
+
+  function episodeScore(entry) {
+    var score = 0;
+    var url = String(entry.url || "").toLowerCase();
+    if (entry.logo) {
+      score += 4;
+    }
+    if (url.indexOf(".mp4") !== -1 || url.indexOf(".mkv") !== -1 || url.indexOf("/movie/") !== -1 || url.indexOf("/series/") !== -1) {
+      score += 2;
+    }
+    if (entry.title) {
+      score += 1;
+    }
+    return score;
+  }
+
+  function foldTitle(text) {
+    return String(text || "").toLowerCase().replace(/[áàâã]/g, "a").replace(/[éèê]/g, "e").replace(/[íì]/g, "i").replace(/[óòôõ]/g, "o").replace(/[úù]/g, "u").replace(/ç/g, "c");
+  }
+
+  function movieTitleKey(entry) {
+    var text = foldTitle(entry.title || "");
+    text = text.replace(/\[[^\]]*\]/g, " ");
+    text = text.replace(/\(([^)]*)\)/g, function (_, inner) {
+      var year = String(inner || "").replace(/\s+/g, "");
+      if (/^(19|20)\d{2}$/.test(year)) {
+        return " " + year + " ";
+      }
+      return " ";
+    });
+    text = text.replace(/\b(dual audio|dublado|legendado|nacional|dub|leg|hd|fhd|uhd|sd|4k|1080p|720p|480p|hdr|bluray|webrip|web dl|dvdrip|hdtv|h264|h265|x264|x265|hevc)\b/g, " ");
+    text = text.replace(/[^a-z0-9]+/g, " ");
+    text = text.replace(/^\s+|\s+$/g, "");
+    if (!text) {
+      return "url:" + String(entry.url || "");
+    }
+    return text;
+  }
+
+  function movieDisplayTitle(entry) {
+    var text = String(entry.title || "");
+    text = text.replace(/\[[^\]]*\]/g, " ");
+    text = text.replace(/\(([^)]*)\)/g, function (_, inner) {
+      var year = String(inner || "").replace(/\s+/g, "");
+      if (/^(19|20)\d{2}$/.test(year)) {
+        return " (" + year + ")";
+      }
+      return " ";
+    });
+    text = text.replace(/\b(dual audio|dublado|legendado|dub|leg|hd|fhd|uhd|sd|4k|1080p|720p|480p|hdr)\b/ig, " ");
+    text = text.replace(/\s+/g, " ");
+    text = text.replace(/^\s+|\s+$/g, "");
+    return text || entry.title || "Sem título";
+  }
+
+  function uniqueMovies(entries) {
+    var chosen = {};
+    var order = [];
+    var i;
+    for (i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      var key = movieTitleKey(entry);
+      if (!chosen[key]) {
+        chosen[key] = entry;
+        order.push(key);
+      } else if (episodeScore(entry) > episodeScore(chosen[key])) {
+        chosen[key] = entry;
+      }
+    }
+    var list = [];
+    for (i = 0; i < order.length; i++) {
+      list.push(chosen[order[i]]);
+    }
+    return list;
+  }
+
+  function uniqueEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+    var i;
+    for (i = 0; i < entries.length; i++) {
+      var entry = entries[i];
+      var key = episodeIdentity(entry);
+      if (!chosen[key]) {
+        chosen[key] = entry;
+        order.push(key);
+      } else if (episodeScore(entry) > episodeScore(chosen[key])) {
+        chosen[key] = entry;
+      }
+    }
+    var list = [];
+    for (i = 0; i < order.length; i++) {
+      list.push(chosen[order[i]]);
+    }
+    list.sort(function (a, b) {
+      var seasonDiff = episodeNumber(a.season_number) - episodeNumber(b.season_number);
+      if (seasonDiff !== 0) {
+        return seasonDiff;
+      }
+      return episodeNumber(a.episode_number) - episodeNumber(b.episode_number);
+    });
+    return list;
   }
 
   function matchesCatalog(entry) {
@@ -1438,27 +1694,37 @@
 
   function buildMovieShelves(items) {
     var trending = [];
-    var rest = [];
     var buckets = {};
     var shelves = [];
+    var used = {};
     var i;
     for (i = 0; i < items.length; i++) {
       if (trending.length < 12 && items[i].logo) {
         trending.push(i);
-      }
-      rest.push(i);
-      var genre = entryGenre(items[i]);
-      if (genre) {
-        if (!buckets[genre.id]) {
-          buckets[genre.id] = [];
-        }
-        if (buckets[genre.id].length < 14) {
-          buckets[genre.id].push(i);
-        }
+        used[i] = 1;
       }
     }
     if (!trending.length) {
-      trending = takeIndexes(rest, 12);
+      for (i = 0; i < items.length && trending.length < 12; i++) {
+        trending.push(i);
+        used[i] = 1;
+      }
+    }
+    for (i = 0; i < items.length; i++) {
+      if (used[i]) {
+        continue;
+      }
+      var genre = entryGenre(items[i]);
+      if (!genre) {
+        continue;
+      }
+      if (!buckets[genre.id]) {
+        buckets[genre.id] = [];
+      }
+      if (buckets[genre.id].length < 14) {
+        buckets[genre.id].push(i);
+        used[i] = 1;
+      }
     }
     if (trending.length) {
       shelves.push({ title: "Em alta", indexes: trending });
@@ -1469,8 +1735,14 @@
         shelves.push({ title: GENRES[i].label, indexes: found });
       }
     }
+    var rest = [];
+    for (i = 0; i < items.length; i++) {
+      if (!used[i] && rest.length < 18) {
+        rest.push(i);
+      }
+    }
     if (rest.length) {
-      shelves.push({ title: "Mais filmes", indexes: takeIndexes(rest, 18) });
+      shelves.push({ title: "Mais filmes", indexes: rest });
     }
     return shelves;
   }
@@ -1545,6 +1817,8 @@
     var label = entry.title || entry.series_title || "Sem título";
     if (entry.season_number || entry.episode_number) {
       label = "T" + (entry.season_number || "?") + " E" + (entry.episode_number || "?");
+    } else if (entryKind(entry) === "movies") {
+      label = movieDisplayTitle(entry);
     }
     var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
     if (entry.logo) {
@@ -1620,10 +1894,31 @@
   }
 
   function renderSearch() {
-    var html = state.catalog ? "<h1>Buscar em " + esc(state.catalog.name) + "</h1>" : "<h1>Buscar na playlist</h1>";
-    html += '<p class="status">' + (state.catalog ? "A busca fica só neste streaming." : "O teclado abre no celular quando este campo está selecionado.") + "</p>";
-    html += '<input id="title-search" class="focusable" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="' + (state.catalog ? "Título em " + esc(state.catalog.name) : "Digite o título") + '" value="' + esc(state.draftQuery) + '">';
-    html += '<div>' + searchAction("Limpar", "query-clear") + searchAction("Buscar", "query-go") + "</div>";
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += "<h1>Buscar</h1>";
+    html += '<p class="status">' + esc(state.message) + "</p>";
+    html += '<input id="title-search" class="focusable" data-col="1" data-row="0" data-slot="0" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Digite o título" value="' + esc(state.draftQuery || state.query) + '">';
+    html += '<div>' + searchAction("Limpar", "query-clear", 1) + searchAction("Buscar", "query-go", 2) + "</div>";
+    html += '<div id="list" class="poster-grid">';
+    var indexes = [];
+    var i;
+    for (i = 0; i < state.items.length; i++) {
+      indexes.push(i);
+    }
+    var shelves = state.seriesKey ? [{ title: "Episódios", indexes: indexes }] : [{ title: "Resultados", indexes: indexes }];
+    if (state.items.length) {
+      var rowNum = 1;
+      var s;
+      var n;
+      for (s = 0; s < shelves.length; s++) {
+        html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
+        for (n = 0; n < shelves[s].indexes.length; n++) {
+          html += posterButton(shelves[s].indexes[n], state.items[shelves[s].indexes[n]], rowNum, n);
+        }
+        rowNum += 1;
+      }
+    }
+    html += "</div>";
     stage.innerHTML = html;
     var field = document.getElementById("title-search");
     if (field) {
@@ -1688,19 +1983,28 @@
   function submitSearch() {
     readSearchField();
     state.query = state.draftQuery.replace(/^\s+|\s+$/g, "");
+    state.catalog = null;
     state.group = "";
     state.groupIndex = 0;
     state.seriesKey = "";
+    state.seriesTitle = "";
+    state.seasons = [];
     state.season = "";
     state.offset = 0;
     state.itemIndex = 0;
-    state.screen = "browse";
+    state.screen = "search";
     state.column = "1";
-    loadItems(false);
+    if (!state.query) {
+      state.items = [];
+      state.message = "Digite um título.";
+      render();
+      return;
+    }
+    loadSearch();
   }
 
-  function searchAction(label, action) {
-    return '<button type="button" class="pager focusable" data-action="' + action + '">' + esc(label) + "</button>";
+  function searchAction(label, action, slot) {
+    return '<button type="button" class="pager focusable" data-col="1" data-row="0" data-slot="' + slot + '" data-action="' + action + '">' + esc(label) + "</button>";
   }
 
   function moveSearch(direction) {
@@ -1794,7 +2098,14 @@
     }
     if (action === "query-clear") {
       state.draftQuery = "";
+      state.query = "";
+      state.items = [];
+      state.seriesKey = "";
+      state.seriesTitle = "";
+      state.message = "Digite um título.";
       state.searchIndex = 0;
+      state.column = "1";
+      state.itemIndex = 0;
       render();
       return;
     }
@@ -1867,7 +2178,12 @@
     if (code === 13 || code === 23 || code === 29443 || code === 65376) {
       event.preventDefault();
       if (state.screen === "search") {
-        submitSearch();
+        var searchBox = document.getElementById("title-search");
+        if (!state.items.length || (searchBox && document.activeElement === searchBox)) {
+          submitSearch();
+          return;
+        }
+        activateCurrent();
         return;
       }
       var catalogField = document.getElementById("catalog-search");
