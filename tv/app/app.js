@@ -6,9 +6,11 @@
   var hudStatus = document.querySelector("#hud-status");
   var video = document.querySelector("#player");
   var avObject = document.querySelector("#av-player");
-  var lastNav = 0;
   var groupTimer = 0;
   var modeTimer = 0;
+  var infoTimer = 0;
+  var infoToken = 0;
+  var selectedEl = null;
   var loadToken = 0;
   var failing = false;
   var scrollTops = { groups: 0, list: 0 };
@@ -40,6 +42,7 @@
     message: "Carregando a programação...",
     activeStreamId: "",
     playingTitle: "",
+    paused: false,
     searchIndex: 0
   };
 
@@ -123,31 +126,39 @@
     }
   }
 
-  function paint() {
-    var cols = ["0", "1", "2"];
-    var c, i, nodes, index;
-    for (c = 0; c < cols.length; c++) {
-      nodes = columnNodes(cols[c]);
-      index = columnIndex(cols[c]);
-      if (index >= nodes.length) {
-        index = nodes.length - 1;
-      }
-      if (index < 0) {
-        index = 0;
-      }
-      setColumnIndex(cols[c], index);
-      for (i = 0; i < nodes.length; i++) {
-        if (i === index && state.column === cols[c]) {
-          nodes[i].setAttribute("data-selected", "1");
-        } else {
-          nodes[i].removeAttribute("data-selected");
-        }
-      }
-      if (nodes[index] && state.column === cols[c]) {
-        ensureVisible(nodes[index]);
-      }
+  function markSelected(el) {
+    if (selectedEl && selectedEl !== el) {
+      selectedEl.removeAttribute("data-selected");
     }
-    updateInfo();
+    selectedEl = el || null;
+    if (!selectedEl) {
+      return;
+    }
+    selectedEl.setAttribute("data-selected", "1");
+    ensureVisible(selectedEl);
+  }
+
+  function paint() {
+    var nodes = state.screen === "search" ? stage.querySelectorAll(".focusable") : columnNodes(state.column);
+    var index = state.screen === "search" ? state.searchIndex : columnIndex(state.column);
+    if (!nodes.length) {
+      selectedEl = null;
+      return;
+    }
+    if (index >= nodes.length) {
+      index = nodes.length - 1;
+    }
+    if (index < 0) {
+      index = 0;
+    }
+    if (state.screen === "search") {
+      state.searchIndex = index;
+    } else {
+      setColumnIndex(state.column, index);
+    }
+    markSelected(nodes[index]);
+    clearTimeout(infoTimer);
+    infoTimer = setTimeout(updateInfo, 30);
   }
 
   function updateInfo() {
@@ -172,17 +183,32 @@
       return;
     }
     var title = entry.title || entry.series_title || "Sem título";
+    var token = infoToken + 1;
+    infoToken = token;
     titleNode.innerHTML = esc(title);
     groupNode.innerHTML = esc(entry.group || state.group || "");
-    if (entry.logo) {
+    poster.innerHTML = esc(title.charAt(0) || "•");
+    if (!entry.logo) {
+      return;
+    }
+    var logo = entry.logo;
+    setTimeout(function () {
+      if (token !== infoToken) {
+        return;
+      }
       var img = document.createElement("img");
       img.alt = "";
-      img.src = entry.logo;
-      img.onerror = function () { poster.innerHTML = esc(title.charAt(0) || "•"); };
-      poster.appendChild(img);
-    } else {
-      poster.innerHTML = esc(title.charAt(0) || "•");
-    }
+      img.src = logo;
+      img.onerror = function () {
+        if (token === infoToken) {
+          poster.innerHTML = esc(title.charAt(0) || "•");
+        }
+      };
+      if (token === infoToken) {
+        poster.innerHTML = "";
+        poster.appendChild(img);
+      }
+    }, 40);
   }
 
   function move(direction) {
@@ -254,7 +280,7 @@
         return;
       }
       selectKind(tab.getAttribute("data-kind"), true);
-    }, 250);
+    }, 80);
   }
 
   function selectKind(kind, stayOnTabs) {
@@ -287,7 +313,7 @@
 
   function scheduleSideLoad() {
     clearTimeout(groupTimer);
-    groupTimer = setTimeout(applySideSelection, 250);
+    groupTimer = setTimeout(applySideSelection, 80);
   }
 
   function applySideSelection() {
@@ -408,7 +434,10 @@
     var requestOffset = append ? state.offset : 0;
     if (!append) {
       state.message = "Carregando a programação...";
-      render();
+      var status = stage.querySelector(".status");
+      if (status) {
+        status.innerHTML = esc(state.message);
+      }
     }
     api("/api/playlist/preloaded", {
       method: "POST",
@@ -506,6 +535,7 @@
 
   function playUrl(url) {
     failing = false;
+    state.paused = false;
     document.body.className = "playing";
     hudTitle.innerHTML = esc(state.playingTitle);
     hudStatus.innerHTML = "Conectando...";
@@ -536,7 +566,9 @@
           },
           onbufferingprogress: function () {},
           onbufferingcomplete: function () {
-            hudStatus.innerHTML = "Reproduzindo";
+            if (!state.paused) {
+              hudStatus.innerHTML = "Reproduzindo";
+            }
           },
           oncurrentplaytime: function () {},
           onstreamcompleted: function () {
@@ -585,6 +617,67 @@
     }
   }
 
+  function activeAvPlay() {
+    if (document.body.className.indexOf("use-video") !== -1) {
+      return null;
+    }
+    var bridge = window.webapis;
+    if (bridge && bridge.avplay) {
+      return bridge.avplay;
+    }
+    return null;
+  }
+
+  function togglePlayback() {
+    if (document.body.className.indexOf("playing") === -1) {
+      return;
+    }
+    if (state.paused) {
+      resumePlayback();
+    } else {
+      pausePlayback();
+    }
+  }
+
+  function pausePlayback() {
+    var nativePlayer = window.AndroidPlayer;
+    var av = activeAvPlay();
+    if (nativePlayer && nativePlayer.pause) {
+      nativePlayer.pause();
+    }
+    if (av) {
+      try {
+        av.pause();
+      } catch (ignore) {}
+    } else {
+      try {
+        video.pause();
+      } catch (ignore) {}
+    }
+    state.paused = true;
+    hudStatus.innerHTML = "Pausado";
+  }
+
+  function resumePlayback() {
+    var nativePlayer = window.AndroidPlayer;
+    var av = activeAvPlay();
+    if (nativePlayer && nativePlayer.resume) {
+      nativePlayer.resume();
+    }
+    if (av) {
+      try {
+        av.play();
+      } catch (ignore) {}
+    } else {
+      var started = video.play();
+      if (started && typeof started.then === "function") {
+        started.then(function () {}, function () {});
+      }
+    }
+    state.paused = false;
+    hudStatus.innerHTML = "Reproduzindo";
+  }
+
   function failPlayback(message) {
     if (failing) {
       return;
@@ -596,6 +689,7 @@
   }
 
   function stopPlayback() {
+    state.paused = false;
     document.body.className = "";
     var nativePlayer = window.AndroidPlayer;
     if (nativePlayer && nativePlayer.stop && !state.stoppingFromAndroid) {
@@ -623,6 +717,7 @@
   }
 
   function render() {
+    selectedEl = null;
     rememberScroll();
     if (state.screen === "search") {
       renderSearch();
@@ -637,11 +732,14 @@
     if (list) {
       list.scrollTop = scrollTops.list || 0;
     }
-    hint.innerHTML = "No topo, esquerda e direita mudam Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
     if (state.screen === "search") {
-      paintSearch();
+      hint.innerHTML = "Digite no celular ou no teclado da TV · Para baixo vai ao botão · OK busca";
     } else {
-      paint();
+      hint.innerHTML = "No topo, esquerda e direita mudam Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
+    }
+    paint();
+    if (state.screen === "search" && state.searchIndex === 0) {
+      setTimeout(focusSearchField, 60);
     }
   }
 
@@ -703,61 +801,78 @@
   }
 
   function renderSearch() {
-    var letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ";
-    var keys = "";
-    var i;
-    for (i = 0; i < letters.length; i++) {
-      var letter = letters.charAt(i);
-      var shown = letter === " " ? "␣" : letter;
-      keys += '<button type="button" class="key focusable" data-action="letter" data-key="' + esc(letter) + '">' + shown + "</button>";
-    }
     var html = "<h1>Buscar na playlist</h1>";
-    html += '<div class="query">' + esc(state.draftQuery || " ") + "</div>";
-    html += keys;
-    html += '<div>' + searchAction("Apagar", "query-back") + searchAction("Limpar", "query-clear") + searchAction("Buscar", "query-go") + "</div>";
+    html += '<p class="status">O teclado abre no celular quando este campo está selecionado.</p>';
+    html += '<input id="title-search" class="focusable" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Digite o título" value="' + esc(state.draftQuery) + '">';
+    html += '<div>' + searchAction("Limpar", "query-clear") + searchAction("Buscar", "query-go") + "</div>";
     stage.innerHTML = html;
+    var field = document.getElementById("title-search");
+    if (field) {
+      field.oninput = function () {
+        state.draftQuery = field.value;
+      };
+    }
+  }
+
+  function focusSearchField() {
+    if (state.screen !== "search") {
+      return;
+    }
+    var field = document.getElementById("title-search");
+    if (!field) {
+      return;
+    }
+    state.searchIndex = 0;
+    paint();
+    field.focus();
+  }
+
+  function readSearchField() {
+    var field = document.getElementById("title-search");
+    if (field) {
+      state.draftQuery = field.value;
+    }
+  }
+
+  function submitSearch() {
+    readSearchField();
+    state.query = state.draftQuery.replace(/^\s+|\s+$/g, "");
+    state.group = "";
+    state.groupIndex = 0;
+    state.seriesKey = "";
+    state.season = "";
+    state.offset = 0;
+    state.itemIndex = 0;
+    state.screen = "browse";
+    state.column = "1";
+    loadItems(false);
   }
 
   function searchAction(label, action) {
     return '<button type="button" class="pager focusable" data-action="' + action + '">' + esc(label) + "</button>";
   }
 
-  function paintSearch() {
-    var nodes = stage.querySelectorAll(".focusable");
-    var i;
-    if (state.searchIndex >= nodes.length) {
-      state.searchIndex = nodes.length - 1;
-    }
-    if (state.searchIndex < 0) {
-      state.searchIndex = 0;
-    }
-    for (i = 0; i < nodes.length; i++) {
-      if (i === state.searchIndex) {
-        nodes[i].setAttribute("data-selected", "1");
-      } else {
-        nodes[i].removeAttribute("data-selected");
-      }
-    }
-  }
-
   function moveSearch(direction) {
+    var field = document.getElementById("title-search");
     var nodes = stage.querySelectorAll(".focusable");
     if (!nodes.length) {
       return;
     }
-    var columns = 13;
+    if (field && document.activeElement === field && direction !== "down") {
+      return;
+    }
     var index = state.searchIndex;
-    if (direction === "left") {
+    if (direction === "down") {
+      index += 1;
+    }
+    if (direction === "up") {
       index -= 1;
     }
     if (direction === "right") {
       index += 1;
     }
-    if (direction === "up") {
-      index -= columns;
-    }
-    if (direction === "down") {
-      index += columns;
+    if (direction === "left") {
+      index -= 1;
     }
     if (index < 0) {
       index = 0;
@@ -766,7 +881,10 @@
       index = nodes.length - 1;
     }
     state.searchIndex = index;
-    paintSearch();
+    paint();
+    if (nodes[index] && nodes[index].focus) {
+      nodes[index].focus();
+    }
   }
 
   function activate(target) {
@@ -791,32 +909,18 @@
       play(state.items[Number(target.getAttribute("data-index"))] || {});
       return;
     }
-    if (action === "letter") {
-      state.draftQuery += target.getAttribute("data-key") || "";
-      render();
-      return;
-    }
-    if (action === "query-back") {
-      state.draftQuery = state.draftQuery.slice(0, -1);
-      render();
+    if (action === "query-field") {
+      focusSearchField();
       return;
     }
     if (action === "query-clear") {
       state.draftQuery = "";
+      state.searchIndex = 0;
       render();
       return;
     }
     if (action === "query-go") {
-      state.query = state.draftQuery.replace(/^\s+|\s+$/g, "");
-      state.group = "";
-      state.groupIndex = 0;
-      state.seriesKey = "";
-      state.season = "";
-      state.offset = 0;
-      state.itemIndex = 0;
-      state.screen = "browse";
-      state.column = "1";
-      loadItems(false);
+      submitSearch();
     }
   }
 
@@ -844,8 +948,17 @@
   document.addEventListener("keydown", function (event) {
     var code = event.keyCode || event.which;
     if (code === 461 || code === 10009 || code === 27 || code === 8) {
+      var typingField = document.getElementById("title-search");
+      if (code === 8 && typingField && document.activeElement === typingField) {
+        return;
+      }
       event.preventDefault();
       goBack();
+      return;
+    }
+    if (code === 415 || code === 19 || code === 10252) {
+      event.preventDefault();
+      togglePlayback();
       return;
     }
     if (document.body.className.indexOf("playing") !== -1) {
@@ -853,12 +966,11 @@
       return;
     }
     if (code === 37 || code === 38 || code === 39 || code === 40) {
-      event.preventDefault();
-      var now = Date.now();
-      if (now - lastNav < 70) {
+      var searchField = document.getElementById("title-search");
+      if (searchField && document.activeElement === searchField && code !== 40) {
         return;
       }
-      lastNav = now;
+      event.preventDefault();
       if (code === 37) {
         move("left");
       } else if (code === 39) {
@@ -870,8 +982,12 @@
       }
       return;
     }
-    if (code === 13 || code === 23 || code === 29443) {
+    if (code === 13 || code === 23 || code === 29443 || code === 65376) {
       event.preventDefault();
+      if (state.screen === "search") {
+        submitSearch();
+        return;
+      }
       activateCurrent();
     }
   });
@@ -885,7 +1001,13 @@
 
   try {
     if (window.tizen && window.tizen.tvinputdevice && window.tizen.tvinputdevice.registerKey) {
-      window.tizen.tvinputdevice.registerKey("Exit");
+      var remoteKeys = ["Exit", "MediaPlay", "MediaPause", "MediaPlayPause"];
+      var keyIndex;
+      for (keyIndex = 0; keyIndex < remoteKeys.length; keyIndex++) {
+        try {
+          window.tizen.tvinputdevice.registerKey(remoteKeys[keyIndex]);
+        } catch (ignoreKey) {}
+      }
     }
   } catch (ignore) {}
 
