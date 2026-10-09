@@ -2,8 +2,10 @@
   var API_BASE = "https://app.streamcorsario.com";
   var stage = document.querySelector("#stage");
   var hint = document.querySelector("#hint");
+  var hud = document.querySelector("#hud");
   var hudTitle = document.querySelector("#hud-title");
   var hudStatus = document.querySelector("#hud-status");
+  var hudTimer = 0;
   var video = document.querySelector("#player");
   var avObject = document.querySelector("#av-player");
   var groupTimer = 0;
@@ -19,6 +21,16 @@
     { id: "movies", label: "Filmes" },
     { id: "series", label: "Séries" },
     { id: "search", label: "Buscar" }
+  ];
+  var STREAMERS = [
+    { id: "netflix", name: "Netflix", search: "netflix", theme: "theme-netflix", image: "brands/netflix.png" },
+    { id: "prime", name: "Prime Video", search: "prime video", theme: "theme-prime", image: "brands/prime.png" },
+    { id: "disney", name: "Disney+", search: "disney plus", theme: "theme-disney", image: "brands/disney.png" },
+    { id: "max", name: "Max", search: "max", theme: "theme-max", image: "brands/max.png" },
+    { id: "apple", name: "Apple TV+", search: "apple tv", theme: "theme-apple", image: "brands/apple.png" },
+    { id: "paramount", name: "Paramount+", search: "paramount plus", theme: "theme-paramount", image: "brands/paramount.png" },
+    { id: "globoplay", name: "Globoplay", search: "globoplay", theme: "theme-globoplay", image: "brands/globoplay.png" },
+    { id: "star", name: "Star+", search: "star plus", theme: "theme-star", image: "brands/star.png" }
   ];
   var state = {
     screen: "browse",
@@ -43,6 +55,7 @@
     activeStreamId: "",
     playingTitle: "",
     paused: false,
+    catalog: null,
     searchIndex: 0
   };
 
@@ -211,9 +224,44 @@
     }, 40);
   }
 
+  function shellClass(extra) {
+    var name = "";
+    if (state.catalog) {
+      name = "themed " + state.catalog.theme;
+    }
+    if (extra) {
+      name = name ? name + " " + extra : extra;
+    }
+    return name;
+  }
+
+  function catalogQuery() {
+    if (state.seriesKey || !state.catalog) {
+      return state.query;
+    }
+    if (state.query) {
+      return state.catalog.search + " " + state.query;
+    }
+    return state.catalog.search;
+  }
+
+  function streamerById(id) {
+    var i;
+    for (i = 0; i < STREAMERS.length; i++) {
+      if (STREAMERS[i].id === id) {
+        return STREAMERS[i];
+      }
+    }
+    return null;
+  }
+
   function move(direction) {
     if (state.screen === "search") {
       moveSearch(direction);
+      return;
+    }
+    if (state.kind === "series" && state.column !== "2") {
+      moveSeries(direction);
       return;
     }
     var nodes = columnNodes(state.column);
@@ -229,7 +277,7 @@
         state.modeIndex = index + 1;
       }
       if (direction === "down") {
-        state.column = "0";
+        state.column = state.kind === "series" ? "1" : "0";
       }
       paint();
       if (direction === "left" || direction === "right") {
@@ -271,6 +319,61 @@
     }
   }
 
+  function moveSeries(direction) {
+    var nodes = columnNodes("1");
+    var per = state.catalog ? 6 : 4;
+    var index = state.itemIndex;
+    if (!nodes.length) {
+      return;
+    }
+    if (direction === "left") {
+      index -= 1;
+    }
+    if (direction === "right") {
+      index += 1;
+    }
+    if (direction === "up") {
+      if (index < per) {
+        state.column = "2";
+        paint();
+        return;
+      }
+      index -= per;
+    }
+    if (direction === "down") {
+      index += per;
+    }
+    if (index < 0) {
+      index = 0;
+    }
+    if (index >= nodes.length) {
+      index = nodes.length - 1;
+    }
+    state.column = "1";
+    state.itemIndex = index;
+    paint();
+  }
+
+  function openCatalog(id) {
+    var streamer = streamerById(id);
+    if (!streamer) {
+      return;
+    }
+    state.catalog = streamer;
+    state.kind = "series";
+    state.group = "";
+    state.query = "";
+    state.seriesKey = "";
+    state.seriesTitle = "";
+    state.seasons = [];
+    state.season = "";
+    state.offset = 0;
+    state.itemIndex = 0;
+    state.column = "1";
+    state.screen = "browse";
+    loadItems(false);
+  }
+
   function scheduleModeLoad() {
     clearTimeout(modeTimer);
     modeTimer = setTimeout(function () {
@@ -291,6 +394,25 @@
         state.searchIndex = 0;
         render();
       }
+      return;
+    }
+    if (kind === "series") {
+      state.kind = "series";
+      state.catalog = null;
+      state.group = "";
+      state.groups = [];
+      state.query = "";
+      state.seriesKey = "";
+      state.seriesTitle = "";
+      state.seasons = [];
+      state.season = "";
+      state.offset = 0;
+      state.items = [];
+      state.itemIndex = 0;
+      state.message = "Escolha um streaming";
+      state.screen = "browse";
+      state.column = stayOnTabs ? "2" : "1";
+      render();
       return;
     }
     if (kind === state.kind && !state.seriesKey && !state.query && state.groups.length) {
@@ -376,6 +498,16 @@
       loadItems(false);
       return;
     }
+    if (state.catalog) {
+      state.catalog = null;
+      state.query = "";
+      state.items = [];
+      state.itemIndex = 0;
+      state.column = "1";
+      state.message = "Escolha um streaming";
+      render();
+      return;
+    }
     if (state.query || state.group) {
       state.query = "";
       state.group = "";
@@ -444,7 +576,7 @@
       body: {
         category: state.kind,
         group: state.seriesKey ? "" : state.group,
-        query: state.query,
+        query: catalogQuery(),
         series_key: state.seriesKey,
         season: state.season,
         offset: requestOffset,
@@ -533,12 +665,26 @@
     });
   }
 
+  function showHud(text) {
+    if (text) {
+      hudStatus.innerHTML = text;
+    }
+    if (!hud) {
+      return;
+    }
+    hud.className = "";
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(function () {
+      hud.className = "hud-hidden";
+    }, 4000);
+  }
+
   function playUrl(url) {
     failing = false;
     state.paused = false;
-    document.body.className = "playing";
+    document.body.className = shellClass("playing");
     hudTitle.innerHTML = esc(state.playingTitle);
-    hudStatus.innerHTML = "Conectando...";
+    showHud("Conectando...");
     if (avObject) {
       avObject.style.width = (window.innerWidth || 1920) + "px";
       avObject.style.height = (window.innerHeight || 1080) + "px";
@@ -546,7 +692,7 @@
     var nativePlayer = window.AndroidPlayer;
     if (nativePlayer && nativePlayer.play) {
       nativePlayer.play(url);
-      hudStatus.innerHTML = "Reproduzindo";
+      showHud("Reproduzindo");
       return;
     }
     var bridge = window.webapis;
@@ -562,17 +708,17 @@
         av.open(url);
         av.setListener({
           onbufferingstart: function () {
-            hudStatus.innerHTML = "Carregando vídeo...";
+            showHud("Carregando vídeo...");
           },
           onbufferingprogress: function () {},
           onbufferingcomplete: function () {
             if (!state.paused) {
-              hudStatus.innerHTML = "Reproduzindo";
+              showHud("Reproduzindo");
             }
           },
           oncurrentplaytime: function () {},
           onstreamcompleted: function () {
-            hudStatus.innerHTML = "Fim do vídeo";
+            showHud("Fim do vídeo");
           },
           onevent: function () {},
           onsubtitlechange: function () {},
@@ -587,7 +733,7 @@
         av.prepareAsync(function () {
           try {
             av.play();
-            hudStatus.innerHTML = "Reproduzindo";
+            showHud("Reproduzindo");
           } catch (ignore) {
             playWithVideo(url);
           }
@@ -601,8 +747,8 @@
   }
 
   function playWithVideo(url) {
-    document.body.className = "playing use-video";
-    hudStatus.innerHTML = "Abrindo player...";
+    document.body.className = shellClass("playing use-video");
+    showHud("Abrindo player...");
     video.onerror = function () {
       failPlayback("A TV não conseguiu reproduzir este título.");
     };
@@ -610,7 +756,7 @@
     var started = video.play();
     if (started && typeof started.then === "function") {
       started.then(function () {
-        hudStatus.innerHTML = "Reproduzindo";
+        showHud("Reproduzindo");
       }, function () {
         failPlayback("A TV não conseguiu reproduzir este título.");
       });
@@ -655,7 +801,7 @@
       } catch (ignore) {}
     }
     state.paused = true;
-    hudStatus.innerHTML = "Pausado";
+    showHud("Pausado");
   }
 
   function resumePlayback() {
@@ -675,7 +821,7 @@
       }
     }
     state.paused = false;
-    hudStatus.innerHTML = "Reproduzindo";
+    showHud("Reproduzindo");
   }
 
   function failPlayback(message) {
@@ -690,7 +836,11 @@
 
   function stopPlayback() {
     state.paused = false;
-    document.body.className = "";
+    clearTimeout(hudTimer);
+    if (hud) {
+      hud.className = "hud-hidden";
+    }
+    document.body.className = shellClass();
     var nativePlayer = window.AndroidPlayer;
     if (nativePlayer && nativePlayer.stop && !state.stoppingFromAndroid) {
       nativePlayer.stop();
@@ -719,8 +869,15 @@
   function render() {
     selectedEl = null;
     rememberScroll();
+    if (document.body.className.indexOf("playing") === -1) {
+      document.body.className = shellClass();
+    }
     if (state.screen === "search") {
       renderSearch();
+    } else if (state.kind === "series" && !state.catalog) {
+      renderStreamers();
+    } else if (state.kind === "series" && state.catalog) {
+      renderCatalog();
     } else {
       renderBrowse();
     }
@@ -734,6 +891,10 @@
     }
     if (state.screen === "search") {
       hint.innerHTML = "Digite no celular ou no teclado da TV · Para baixo vai ao botão · OK busca";
+    } else if (state.catalog) {
+      hint.innerHTML = "Setas percorrem os cartazes · OK abre · Voltar retorna aos streamings";
+    } else if (state.kind === "series") {
+      hint.innerHTML = "Escolha o streaming · OK abre o catálogo · Voltar sai";
     } else {
       hint.innerHTML = "No topo, esquerda e direita mudam Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
     }
@@ -741,6 +902,67 @@
     if (state.screen === "search" && state.searchIndex === 0) {
       setTimeout(focusSearchField, 60);
     }
+  }
+
+  function modeButtons() {
+    var modes = "";
+    var i;
+    for (i = 0; i < MODES.length; i++) {
+      var current = MODES[i].id === state.kind && MODES[i].id !== "search" ? " current" : "";
+      modes += '<button type="button" class="mode focusable' + current + '" data-col="2" data-action="mode" data-kind="' + MODES[i].id + '">' + esc(MODES[i].label) + "</button>";
+    }
+    return modes;
+  }
+
+  function renderStreamers() {
+    var cards = "";
+    var i;
+    for (i = 0; i < STREAMERS.length; i++) {
+      var streamer = STREAMERS[i];
+      cards += '<button type="button" class="brand-card focusable" data-col="1" data-action="catalog" data-catalog="' + streamer.id + '">';
+      cards += '<img src="' + streamer.image + '" alt="">';
+      cards += "<span>" + esc(streamer.name) + "</span></button>";
+    }
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += '<p class="status">' + esc(state.message) + "</p>";
+    html += '<h1 class="shelf-title">Streamings</h1>';
+    html += '<div id="list" class="brand-grid">' + cards + "</div>";
+    stage.innerHTML = html;
+  }
+
+  function renderCatalog() {
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += '<div class="brand-bar"><img src="' + state.catalog.image + '" alt=""><strong>' + esc(state.catalog.name) + "</strong></div>";
+    html += '<p class="status">' + esc(state.message) + "</p>";
+    if (state.seriesTitle) {
+      html += '<h1 class="shelf-title">' + esc(state.seriesTitle) + "</h1>";
+    }
+    html += '<div id="list" class="poster-grid">';
+    var i;
+    var rowSize = 6;
+    for (i = 0; i < state.items.length; i++) {
+      if (i % rowSize === 0) {
+        html += '<h2 class="row-label">' + (i === 0 ? "Em alta" : "Catálogo") + "</h2>";
+      }
+      html += posterButton(i, state.items[i]);
+    }
+    if (state.hasMore) {
+      html += '<button type="button" class="poster more focusable" data-col="1" data-action="more" data-index="more"><span>Mais títulos</span></button>';
+    }
+    html += "</div>";
+    stage.innerHTML = html;
+  }
+
+  function posterButton(index, entry) {
+    var label = entry.title || entry.series_title || "Sem título";
+    if (entry.season_number || entry.episode_number) {
+      label = "T" + (entry.season_number || "?") + " E" + (entry.episode_number || "?");
+    }
+    var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
+    if (entry.logo) {
+      art = '<img src="' + esc(entry.logo) + '" alt="" onerror="this.style.visibility=\'hidden\'">';
+    }
+    return '<button type="button" class="poster focusable" data-col="1" data-action="play" data-index="' + index + '">' + art + "<span>" + esc(label) + "</span></button>";
   }
 
   function renderBrowse() {
@@ -892,6 +1114,10 @@
       return;
     }
     var action = target.getAttribute("data-action");
+    if (action === "catalog") {
+      openCatalog(target.getAttribute("data-catalog"));
+      return;
+    }
     if (action === "mode") {
       selectKind(target.getAttribute("data-kind"), false);
       return;
