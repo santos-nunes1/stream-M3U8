@@ -494,6 +494,7 @@ class PlaylistCatalog:
         allowed_terms: Optional[List[str]] = None,
         featured_sections: Optional[List[Dict]] = None,
         access_seed: str = "",
+        browse: str = "",
     ) -> Dict:
         query = _normalize_search_value(query.strip())
         lookup_alias = _series_lookup_alias_for_query(query) if query and not series_key else None
@@ -604,7 +605,15 @@ class PlaylistCatalog:
                 "groups": self._global_groups(include_adult),
             }
         if category == "series" and not series_key:
-            return self._series_group_response(playlist_id, indices, offset, limit, include_adult, query=query)
+            return self._series_group_response(
+                playlist_id,
+                indices,
+                offset,
+                limit,
+                include_adult,
+                query=query,
+                skip_popular=browse == "playlist",
+            )
         if query and category == "all" and not series_key and indices and all(
             (self.entries[index].get("category") or "other") == "series" for index in indices
         ):
@@ -651,7 +660,7 @@ class PlaylistCatalog:
             "limit": limit,
             "has_more": offset + limit < total,
             "counts": metadata["counts"],
-            "groups": self._global_groups(include_adult),
+            "groups": self._category_groups(category, include_adult),
         }
 
     def _series_episode_sort_key(self, index: int) -> Tuple[int, int, str]:
@@ -890,8 +899,9 @@ class PlaylistCatalog:
         limit: int,
         include_adult: bool,
         query: str = "",
+        skip_popular: bool = False,
     ) -> Dict:
-        if offset == 0 and self._looks_like_full_series_listing(indices):
+        if offset == 0 and not skip_popular and self._looks_like_full_series_listing(indices):
             summaries = self._popular_series_summaries(include_adult, limit)
             if summaries:
                 total = max(len(self.series_summaries), len(summaries))
@@ -904,7 +914,7 @@ class PlaylistCatalog:
                     "limit": limit,
                     "has_more": len(summaries) < total,
                     "counts": self.metadata["counts"],
-                    "groups": self._global_groups(include_adult),
+                    "groups": self._category_groups("series", include_adult),
                 }
 
         allowed = set(indices)
@@ -975,7 +985,7 @@ class PlaylistCatalog:
             "limit": limit,
             "has_more": page_end < len(summaries),
             "counts": metadata["counts"],
-            "groups": self._global_groups(include_adult),
+            "groups": self._category_groups("series", include_adult),
         }
 
     def _series_summary_match_indices(self, query: str, include_adult: bool) -> List[int]:
@@ -1176,6 +1186,29 @@ class PlaylistCatalog:
                 [index for index in self.all_indices if index not in self.adult_indices]
             )
         return self.metadata_without_adult_cache
+
+    def _category_groups(self, category: str, include_adult: bool) -> List[str]:
+        cache = getattr(self, "_category_groups_cache", None)
+        if cache is None:
+            cache = {}
+            self._category_groups_cache = cache
+        key = (category or "all", bool(include_adult))
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        if not category or category == "all":
+            groups = self._global_groups(include_adult)
+        else:
+            found = set()
+            for index in self._filtered_indices(category, ""):
+                if not include_adult and index in self.adult_indices:
+                    continue
+                group = self.entries[index].get("group") or ""
+                if group and (include_adult or not _has_adult_marker(group)):
+                    found.add(group)
+            groups = sorted(found)
+        cache[key] = groups
+        return groups
 
     def _global_groups(self, include_adult: bool) -> List[str]:
         cached = self.global_groups_cache.get(include_adult)
@@ -3120,6 +3153,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 allowed_terms=self._catalog_allowed_terms(auth),
                 featured_sections=self._catalog_featured_sections(auth),
                 access_seed=str(auth["user"].get("id") or ""),
+                browse=payload.get("browse") or "",
             )
             self._send_json(200, response)
         except (InvalidPlaylistError, ValueError) as exc:
@@ -4098,6 +4132,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
         allowed_terms: Optional[List[str]] = None,
         featured_sections: Optional[List[Dict]] = None,
         access_seed: str = "",
+        browse: str = "",
     ) -> Dict:
         with self.playlist_index_lock:
             catalog = self.playlist_catalog_cache.get(playlist_id)
@@ -4116,6 +4151,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
             allowed_terms=allowed_terms,
             featured_sections=featured_sections,
             access_seed=access_seed,
+            browse=browse,
         )
 
     def trial_catalog_response(

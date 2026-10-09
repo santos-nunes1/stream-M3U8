@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body tabindex="0">
+    <object id="av-player" type="application/avplayer"></object>
     <div id="app">
       <header class="top">
         <div class="ship-brand">
@@ -16,7 +17,7 @@
             <small>TV a bordo</small>
           </span>
         </div>
-        <p id="hint" class="hint">Setas para mover · OK para escolher · Voltar para retornar</p>
+        <p id="hint" class="hint">Setas movem · OK reproduz · Voltar retorna</p>
       </header>
       <main id="stage"></main>
     </div>
@@ -24,7 +25,7 @@
       <span class="helm-icon helm-icon-small"></span>
       <span>
         <strong id="hud-title">Reproduzindo</strong>
-        <small>Voltar para parar</small>
+        <small id="hud-status">Conectando...</small>
       </span>
     </div>
     <video id="player" playsinline></video>
