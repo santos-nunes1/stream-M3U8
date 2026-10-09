@@ -6,6 +6,7 @@
   var hudTitle = document.querySelector("#hud-title");
   var hudStatus = document.querySelector("#hud-status");
   var hudTimer = 0;
+  var progressTimer = 0;
   var video = document.querySelector("#player");
   var avObject = document.querySelector("#av-player");
   var groupTimer = 0;
@@ -32,6 +33,23 @@
     { id: "globoplay", name: "Globoplay", search: "globoplay", theme: "theme-globoplay", image: "brands/globoplay.png" },
     { id: "star", name: "Star+", search: "star plus", theme: "theme-star", image: "brands/star.png" }
   ];
+  var GENRES = [
+    { id: "acao", label: "Ação", words: ["acao", "ação", "action"] },
+    { id: "aventura", label: "Aventura", words: ["aventura", "adventure"] },
+    { id: "comedia", label: "Comédia", words: ["comedia", "comédia", "comedy"] },
+    { id: "crime", label: "Crime", words: ["crime", "policial"] },
+    { id: "documentario", label: "Documentários", words: ["document"] },
+    { id: "drama", label: "Drama", words: ["drama"] },
+    { id: "fantasia", label: "Fantasia", words: ["fantasia", "fantasy"] },
+    { id: "ficcao", label: "Ficção científica", words: ["ficcao", "ficção", "sci-fi", "scifi", "sci fi"] },
+    { id: "guerra", label: "Guerra", words: ["guerra"] },
+    { id: "animacao", label: "Animação", words: ["anima", "animacao", "animação", "desenho", "cartoon"] },
+    { id: "infantil", label: "Infantil", words: ["infantil", "kids"] },
+    { id: "nacional", label: "Nacional", words: ["nacional"] },
+    { id: "romance", label: "Romance", words: ["romance"] },
+    { id: "suspense", label: "Suspense", words: ["suspense", "thriller"] },
+    { id: "terror", label: "Terror", words: ["terror", "horror"] }
+  ];
   var state = {
     screen: "browse",
     column: "2",
@@ -56,6 +74,9 @@
     playingTitle: "",
     paused: false,
     catalog: null,
+    watching: null,
+    resumeSeconds: 0,
+    resumeApplied: false,
     searchIndex: 0
   };
 
@@ -260,7 +281,7 @@
       moveSearch(direction);
       return;
     }
-    if (state.kind === "series" && state.column !== "2") {
+    if ((state.kind === "series" || state.kind === "movies") && state.column !== "2") {
       moveSeries(direction);
       return;
     }
@@ -277,7 +298,7 @@
         state.modeIndex = index + 1;
       }
       if (direction === "down") {
-        state.column = state.kind === "series" ? "1" : "0";
+        state.column = state.kind === "series" || state.kind === "movies" ? "1" : "0";
       }
       paint();
       if (direction === "left" || direction === "right") {
@@ -321,36 +342,57 @@
 
   function moveSeries(direction) {
     var nodes = columnNodes("1");
-    var per = state.catalog ? 6 : 4;
-    var index = state.itemIndex;
     if (!nodes.length) {
       return;
     }
-    if (direction === "left") {
-      index -= 1;
-    }
-    if (direction === "right") {
-      index += 1;
-    }
-    if (direction === "up") {
-      if (index < per) {
-        state.column = "2";
-        paint();
-        return;
-      }
-      index -= per;
-    }
-    if (direction === "down") {
-      index += per;
-    }
-    if (index < 0) {
+    var index = state.itemIndex;
+    if (index < 0 || index >= nodes.length) {
       index = 0;
     }
-    if (index >= nodes.length) {
-      index = nodes.length - 1;
+    var current = nodes[index];
+    var row = Number(current.getAttribute("data-row") || "0");
+    var slot = Number(current.getAttribute("data-slot") || "0");
+    var targetRow = row;
+    var targetSlot = slot;
+    if (direction === "left") {
+      targetSlot -= 1;
+    }
+    if (direction === "right") {
+      targetSlot += 1;
+    }
+    if (direction === "up") {
+      targetRow -= 1;
+    }
+    if (direction === "down") {
+      targetRow += 1;
+    }
+    if (targetRow < 0) {
+      state.column = "2";
+      paint();
+      return;
+    }
+    var i;
+    var best = -1;
+    var bestDist = 9999;
+    for (i = 0; i < nodes.length; i++) {
+      var nodeRow = Number(nodes[i].getAttribute("data-row") || "0");
+      var nodeSlot = Number(nodes[i].getAttribute("data-slot") || "0");
+      if ((direction === "left" || direction === "right") && nodeRow === row && nodeSlot === targetSlot) {
+        best = i;
+      }
+      if ((direction === "up" || direction === "down") && nodeRow === targetRow) {
+        var dist = Math.abs(nodeSlot - slot);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      }
+    }
+    if (best < 0) {
+      return;
     }
     state.column = "1";
-    state.itemIndex = index;
+    state.itemIndex = best;
     paint();
   }
 
@@ -415,10 +457,29 @@
       render();
       return;
     }
+    if (kind === "movies") {
+      state.kind = "movies";
+      state.catalog = null;
+      state.group = "";
+      state.groups = [];
+      state.query = "";
+      state.seriesKey = "";
+      state.seriesTitle = "";
+      state.seasons = [];
+      state.season = "";
+      state.offset = 0;
+      state.items = [];
+      state.itemIndex = 0;
+      state.screen = "browse";
+      state.column = stayOnTabs ? "2" : "1";
+      loadMovieCatalog();
+      return;
+    }
     if (kind === state.kind && !state.seriesKey && !state.query && state.groups.length) {
       return;
     }
     state.kind = kind;
+    state.catalog = null;
     state.group = "";
     state.groups = [];
     state.groupIndex = 0;
@@ -498,6 +559,14 @@
       loadItems(false);
       return;
     }
+    if (state.catalog && state.query) {
+      state.query = "";
+      state.draftQuery = "";
+      state.itemIndex = 0;
+      state.column = "1";
+      loadStreamerCatalog();
+      return;
+    }
     if (state.catalog) {
       state.catalog = null;
       state.query = "";
@@ -562,6 +631,10 @@
   }
 
   function loadItems(append) {
+    if (state.catalog && !state.seriesKey && !append) {
+      loadStreamerCatalog();
+      return;
+    }
     var token = ++loadToken;
     var requestOffset = append ? state.offset : 0;
     if (!append) {
@@ -615,6 +688,267 @@
     });
   }
 
+  function readContinue() {
+    try {
+      var raw = localStorage.getItem("streamcorsario.continue");
+      var parsed = raw ? JSON.parse(raw) : [];
+      if (parsed && parsed.length) {
+        return parsed;
+      }
+    } catch (ignore) {}
+    return [];
+  }
+
+  function writeContinue(items) {
+    try {
+      localStorage.setItem("streamcorsario.continue", JSON.stringify(items));
+    } catch (ignore) {}
+  }
+
+  function matchesContinueView(item) {
+    if (state.kind === "movies") {
+      return item.kind === "movies";
+    }
+    if (state.kind === "series" && state.catalog) {
+      return item.catalogId === state.catalog.id;
+    }
+    if (state.kind === "series") {
+      return item.kind === "series";
+    }
+    return false;
+  }
+
+  function visibleContinue() {
+    var all = readContinue();
+    var list = [];
+    var i;
+    for (i = 0; i < all.length; i++) {
+      if (all[i].position >= 20 && matchesContinueView(all[i])) {
+        list.push(all[i]);
+      }
+    }
+    return list;
+  }
+
+  function savedPosition(url) {
+    var items = readContinue();
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (items[i].url === url && items[i].position >= 20) {
+        if (!items[i].duration || items[i].position < items[i].duration - 30) {
+          return items[i].position;
+        }
+      }
+    }
+    return 0;
+  }
+
+  function currentProgress() {
+    var position = 0;
+    var duration = 0;
+    var av = activeAvPlay();
+    if (av) {
+      try {
+        position = av.getCurrentTime() / 1000;
+      } catch (ignore) {}
+      try {
+        duration = av.getDuration() / 1000;
+      } catch (ignore) {}
+    } else if (video && video.currentTime) {
+      position = video.currentTime;
+      duration = video.duration || 0;
+    }
+    return { position: position, duration: duration };
+  }
+
+  function saveWatching() {
+    if (!state.watching || !state.watching.url || state.watching.kind === "tv") {
+      return;
+    }
+    var progress = currentProgress();
+    if (progress.position < 15) {
+      return;
+    }
+    var kept = {
+      url: state.watching.url,
+      title: state.watching.title,
+      logo: state.watching.logo || "",
+      kind: state.watching.kind,
+      catalogId: state.watching.catalogId || "",
+      group: state.watching.group || "",
+      category: state.watching.category || "",
+      mediaKind: state.watching.mediaKind || "",
+      position: Math.floor(progress.position),
+      duration: Math.floor(progress.duration || 0)
+    };
+    var finished = kept.duration > 60 && kept.position > kept.duration * 0.92;
+    var items = readContinue();
+    var next = [];
+    var i;
+    if (!finished) {
+      next.push(kept);
+    }
+    for (i = 0; i < items.length; i++) {
+      if (items[i].url !== kept.url && next.length < 24) {
+        next.push(items[i]);
+      }
+    }
+    writeContinue(next);
+  }
+
+  function seekPlayback(seconds) {
+    if (!seconds || seconds < 20 || state.resumeApplied) {
+      return;
+    }
+    state.resumeApplied = true;
+    var av = activeAvPlay();
+    if (av) {
+      try {
+        av.seekTo(Math.floor(seconds * 1000));
+      } catch (ignore) {}
+    } else {
+      try {
+        video.currentTime = seconds;
+      } catch (ignore) {}
+    }
+    showHud("Continuando de onde parou");
+  }
+
+  function armResume() {
+    clearInterval(progressTimer);
+    progressTimer = setInterval(saveWatching, 8000);
+    if (!state.resumeSeconds) {
+      return;
+    }
+    setTimeout(function () {
+      seekPlayback(state.resumeSeconds);
+    }, 1200);
+  }
+
+  function isLiveChannel(entry) {
+    var url = String(entry.url || "").toLowerCase();
+    var hay = entryHaystack(entry);
+    if (url.indexOf("/movie/") !== -1 || url.indexOf(".mp4") !== -1 || url.indexOf(".mkv") !== -1 || url.indexOf(".m4v") !== -1) {
+      return false;
+    }
+    if (url.indexOf("/live/") !== -1 || url.indexOf(".ts") !== -1) {
+      return true;
+    }
+    if (hay.indexOf("canal") !== -1 || hay.indexOf("canais") !== -1 || hay.indexOf("24h") !== -1 || hay.indexOf("ao vivo") !== -1) {
+      return true;
+    }
+    if (entry.media_kind === "mpegts") {
+      return true;
+    }
+    return false;
+  }
+
+  function loadMovieCatalog() {
+    var token = ++loadToken;
+    state.message = "Carregando filmes...";
+    state.items = [];
+    render();
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "movies",
+        group: "",
+        query: "",
+        series_key: "",
+        season: "",
+        offset: 0,
+        limit: 500,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      if (token !== loadToken) {
+        return;
+      }
+      if (error || !payload || payload.status === "loading") {
+        state.message = error ? error.message : "A playlist ainda está carregando.";
+        render();
+        return;
+      }
+      var batch = payload.entries || [];
+      var kept = [];
+      var i;
+      for (i = 0; i < batch.length; i++) {
+        if (!isLiveChannel(batch[i]) && entryKind(batch[i]) !== "series") {
+          kept.push(batch[i]);
+        }
+      }
+      state.items = kept;
+      state.hasMore = false;
+      state.message = kept.length ? kept.length + " filmes" : "Nenhum filme encontrado.";
+      render();
+    });
+  }
+
+  function loadStreamerCatalog() {
+    var token = ++loadToken;
+    var pending = 2;
+    var seriesBatch = [];
+    var movieBatch = [];
+    state.message = "Carregando " + state.catalog.name + "...";
+    state.items = [];
+    render();
+    function finish() {
+      pending -= 1;
+      if (pending > 0 || token !== loadToken) {
+        return;
+      }
+      state.items = seriesBatch.concat(movieBatch);
+      state.hasMore = false;
+      state.offset = state.items.length;
+      if (state.query) {
+        state.message = state.items.length ? state.items.length + " títulos em " + state.catalog.name : "Nada com esse título em " + state.catalog.name + ".";
+      } else {
+        state.message = state.items.length ? state.items.length + " títulos" : "Nada neste streaming.";
+      }
+      render();
+    }
+    function pull(category, assign) {
+      api("/api/playlist/preloaded", {
+        method: "POST",
+        body: {
+          category: category,
+          group: "",
+          query: catalogQuery(),
+          series_key: "",
+          season: "",
+          offset: 0,
+          limit: 160,
+          browse: "playlist"
+        }
+      }, function (error, payload) {
+        if (token !== loadToken) {
+          return;
+        }
+        if (error || !payload || payload.status === "loading") {
+          assign([]);
+          finish();
+          return;
+        }
+        var batch = payload.series_groups && payload.series_groups.length ? payload.series_groups : (payload.entries || []);
+        var kept = [];
+        var i;
+        for (i = 0; i < batch.length; i++) {
+          if (matchesCatalog(batch[i])) {
+            kept.push(batch[i]);
+          }
+        }
+        assign(kept);
+        finish();
+      });
+    }
+    pull("series", function (items) {
+      seriesBatch = items;
+    });
+    pull("movies", function (items) {
+      movieBatch = items;
+    });
+  }
+
   function play(entry) {
     if (entry.series_key && !entry.url) {
       state.seriesKey = entry.series_key;
@@ -635,6 +969,18 @@
     }
     state.message = "Abrindo no servidor...";
     state.playingTitle = entry.title || entry.series_title || "Reproduzindo";
+    state.watching = {
+      url: entry.url,
+      title: state.playingTitle,
+      logo: entry.logo || "",
+      kind: entry.kind || state.kind,
+      catalogId: state.catalog ? state.catalog.id : (entry.catalogId || ""),
+      group: entry.group || "",
+      category: entry.category || state.kind,
+      mediaKind: entry.media_kind || ""
+    };
+    state.resumeSeconds = savedPosition(entry.url);
+    state.resumeApplied = false;
     render();
     api("/stream/start", {
       method: "POST",
@@ -692,7 +1038,8 @@
     var nativePlayer = window.AndroidPlayer;
     if (nativePlayer && nativePlayer.play) {
       nativePlayer.play(url);
-      showHud("Reproduzindo");
+      showHud(state.resumeSeconds ? "Continuando de onde parou" : "Reproduzindo");
+      armResume();
       return;
     }
     var bridge = window.webapis;
@@ -712,7 +1059,9 @@
           },
           onbufferingprogress: function () {},
           onbufferingcomplete: function () {
-            if (!state.paused) {
+            if (state.resumeSeconds) {
+              seekPlayback(state.resumeSeconds);
+            } else if (!state.paused) {
               showHud("Reproduzindo");
             }
           },
@@ -733,7 +1082,8 @@
         av.prepareAsync(function () {
           try {
             av.play();
-            showHud("Reproduzindo");
+            showHud(state.resumeSeconds ? "Continuando de onde parou" : "Reproduzindo");
+            armResume();
           } catch (ignore) {
             playWithVideo(url);
           }
@@ -756,10 +1106,13 @@
     var started = video.play();
     if (started && typeof started.then === "function") {
       started.then(function () {
-        showHud("Reproduzindo");
+        showHud(state.resumeSeconds ? "Continuando de onde parou" : "Reproduzindo");
+        armResume();
       }, function () {
         failPlayback("A TV não conseguiu reproduzir este título.");
       });
+    } else {
+      armResume();
     }
   }
 
@@ -801,6 +1154,7 @@
       } catch (ignore) {}
     }
     state.paused = true;
+    saveWatching();
     showHud("Pausado");
   }
 
@@ -835,6 +1189,8 @@
   }
 
   function stopPlayback() {
+    saveWatching();
+    clearInterval(progressTimer);
     state.paused = false;
     clearTimeout(hudTimer);
     if (hud) {
@@ -876,8 +1232,10 @@
       renderSearch();
     } else if (state.kind === "series" && !state.catalog) {
       renderStreamers();
-    } else if (state.kind === "series" && state.catalog) {
+    }     else if (state.kind === "series" && state.catalog) {
       renderCatalog();
+    } else if (state.kind === "movies") {
+      renderMovieShelves();
     } else {
       renderBrowse();
     }
@@ -892,7 +1250,7 @@
     if (state.screen === "search") {
       hint.innerHTML = "Digite no celular ou no teclado da TV · Para baixo vai ao botão · OK busca";
     } else if (state.catalog) {
-      hint.innerHTML = "Setas percorrem os cartazes · OK abre · Voltar retorna aos streamings";
+      hint.innerHTML = "O campo busca só neste streaming · Setas nos cartazes · OK abre · Voltar sai da busca";
     } else if (state.kind === "series") {
       hint.innerHTML = "Escolha o streaming · OK abre o catálogo · Voltar sai";
     } else {
@@ -914,46 +1272,276 @@
     return modes;
   }
 
+  function continueCards(row) {
+    var items = visibleContinue();
+    var html = "";
+    var i;
+    if (!items.length) {
+      return "";
+    }
+    html += '<h2 class="row-label">Continuar assistindo</h2>';
+    for (i = 0; i < items.length; i++) {
+      html += resumePoster(i, items[i], row, i);
+    }
+    return html;
+  }
+
+  function resumePoster(index, item, row, slot) {
+    var label = item.title || "Sem título";
+    var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
+    var width = 8;
+    if (item.logo) {
+      art = '<img src="' + esc(item.logo) + '" alt="" onerror="this.style.visibility=\'hidden\'">';
+    }
+    if (item.duration) {
+      width = Math.floor((item.position / item.duration) * 100);
+    }
+    if (width < 8) {
+      width = 8;
+    }
+    if (width > 100) {
+      width = 100;
+    }
+    return '<button type="button" class="poster focusable" data-col="1" data-action="resume" data-resume="' + index + '" data-row="' + row + '" data-slot="' + slot + '">' + art + '<i class="progress" style="width:' + width + '%"></i><span>' + esc(label) + "</span></button>";
+  }
+
   function renderStreamers() {
     var cards = "";
     var i;
+    var resume = visibleContinue();
+    var row = resume.length ? 1 : 0;
     for (i = 0; i < STREAMERS.length; i++) {
       var streamer = STREAMERS[i];
-      cards += '<button type="button" class="brand-card focusable" data-col="1" data-action="catalog" data-catalog="' + streamer.id + '">';
+      var slot = i % 4;
+      var cardRow = row + Math.floor(i / 4);
+      cards += '<button type="button" class="brand-card focusable" data-col="1" data-action="catalog" data-catalog="' + streamer.id + '" data-row="' + cardRow + '" data-slot="' + slot + '">';
       cards += '<img src="' + streamer.image + '" alt="">';
       cards += "<span>" + esc(streamer.name) + "</span></button>";
     }
     var html = '<div class="modes">' + modeButtons() + "</div>";
     html += '<p class="status">' + esc(state.message) + "</p>";
+    html += '<div id="list" class="brand-grid">';
+    html += continueCards(0);
     html += '<h1 class="shelf-title">Streamings</h1>';
-    html += '<div id="list" class="brand-grid">' + cards + "</div>";
+    html += cards;
+    html += "</div>";
+    stage.innerHTML = html;
+  }
+
+  function matchesCatalog(entry) {
+    if (!state.catalog) {
+      return true;
+    }
+    var extraGroups = entry.groups && entry.groups.join ? entry.groups.join(" ") : "";
+    var hay = String((entry.group || "") + " " + extraGroups + " " + (entry.title || "") + " " + (entry.series_title || "")).toLowerCase();
+    var tokens = state.catalog.search.split(" ");
+    var i;
+    for (i = 0; i < tokens.length; i++) {
+      if (tokens[i] && hay.indexOf(tokens[i]) === -1) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function entryHaystack(entry) {
+    return String((entry.group || "") + " " + (entry.title || "") + " " + (entry.series_title || "")).toLowerCase();
+  }
+
+  function entryKind(entry) {
+    if (entry.category === "movies" || entry.category === "movie") {
+      return "movies";
+    }
+    if (entry.series_key || entry.category === "series") {
+      return "series";
+    }
+    return "other";
+  }
+
+  function entryGenre(entry) {
+    var hay = entryHaystack(entry);
+    var i;
+    var j;
+    for (i = 0; i < GENRES.length; i++) {
+      for (j = 0; j < GENRES[i].words.length; j++) {
+        if (hay.indexOf(GENRES[i].words[j]) !== -1) {
+          return GENRES[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  function takeIndexes(source, limit) {
+    var list = [];
+    var i;
+    for (i = 0; i < source.length && list.length < limit; i++) {
+      list.push(source[i]);
+    }
+    return list;
+  }
+
+  function buildShelves(items) {
+    var trending = [];
+    var series = [];
+    var movies = [];
+    var other = [];
+    var buckets = {};
+    var shelves = [];
+    var i;
+    for (i = 0; i < items.length; i++) {
+      var entry = items[i];
+      var kind = entryKind(entry);
+      if (trending.length < 12 && entry.logo) {
+        trending.push(i);
+      }
+      if (kind === "movies") {
+        movies.push(i);
+      } else if (kind === "series") {
+        series.push(i);
+      } else {
+        other.push(i);
+      }
+      var genre = entryGenre(entry);
+      if (genre) {
+        if (!buckets[genre.id]) {
+          buckets[genre.id] = [];
+        }
+        if (buckets[genre.id].length < 12) {
+          buckets[genre.id].push(i);
+        }
+      }
+    }
+    if (!trending.length) {
+      trending = takeIndexes(series.concat(movies), 12);
+    }
+    if (trending.length) {
+      shelves.push({ title: "Em alta", indexes: trending });
+    }
+    if (series.length) {
+      shelves.push({ title: "Séries", indexes: takeIndexes(series, 18) });
+    }
+    if (movies.length) {
+      shelves.push({ title: "Filmes", indexes: takeIndexes(movies, 18) });
+    }
+    if (other.length) {
+      shelves.push({ title: "Outros conteúdos", indexes: takeIndexes(other, 12) });
+    }
+    for (i = 0; i < GENRES.length; i++) {
+      var found = buckets[GENRES[i].id];
+      if (found && found.length >= 3) {
+        shelves.push({ title: GENRES[i].label, indexes: found });
+      }
+    }
+    return shelves;
+  }
+
+  function buildMovieShelves(items) {
+    var trending = [];
+    var rest = [];
+    var buckets = {};
+    var shelves = [];
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (trending.length < 12 && items[i].logo) {
+        trending.push(i);
+      }
+      rest.push(i);
+      var genre = entryGenre(items[i]);
+      if (genre) {
+        if (!buckets[genre.id]) {
+          buckets[genre.id] = [];
+        }
+        if (buckets[genre.id].length < 14) {
+          buckets[genre.id].push(i);
+        }
+      }
+    }
+    if (!trending.length) {
+      trending = takeIndexes(rest, 12);
+    }
+    if (trending.length) {
+      shelves.push({ title: "Em alta", indexes: trending });
+    }
+    for (i = 0; i < GENRES.length; i++) {
+      var found = buckets[GENRES[i].id];
+      if (found && found.length >= 3) {
+        shelves.push({ title: GENRES[i].label, indexes: found });
+      }
+    }
+    if (rest.length) {
+      shelves.push({ title: "Mais filmes", indexes: takeIndexes(rest, 18) });
+    }
+    return shelves;
+  }
+
+  function renderMovieShelves() {
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += '<h1 class="shelf-title">Filmes</h1>';
+    html += '<p class="status">' + esc(state.message) + "</p>";
+    html += '<div id="list" class="poster-grid">';
+    var resume = visibleContinue();
+    var rowNum = resume.length ? 1 : 0;
+    html += continueCards(0);
+    var shelves = buildMovieShelves(state.items);
+    var s;
+    var n;
+    for (s = 0; s < shelves.length; s++) {
+      html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
+      for (n = 0; n < shelves[s].indexes.length; n++) {
+        var itemIndex = shelves[s].indexes[n];
+        html += posterButton(itemIndex, state.items[itemIndex], rowNum, n);
+      }
+      rowNum += 1;
+    }
+    html += "</div>";
     stage.innerHTML = html;
   }
 
   function renderCatalog() {
     var html = '<div class="modes">' + modeButtons() + "</div>";
     html += '<div class="brand-bar"><img src="' + state.catalog.image + '" alt=""><strong>' + esc(state.catalog.name) + "</strong></div>";
+    if (!state.seriesKey) {
+      html += '<input id="catalog-search" class="focusable" data-col="1" data-action="catalog-search" data-row="0" data-slot="0" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Buscar em ' + esc(state.catalog.name) + '" value="' + esc(state.query) + '">';
+    }
     html += '<p class="status">' + esc(state.message) + "</p>";
     if (state.seriesTitle) {
       html += '<h1 class="shelf-title">' + esc(state.seriesTitle) + "</h1>";
     }
     html += '<div id="list" class="poster-grid">';
-    var i;
-    var rowSize = 6;
-    for (i = 0; i < state.items.length; i++) {
-      if (i % rowSize === 0) {
-        html += '<h2 class="row-label">' + (i === 0 ? "Em alta" : "Catálogo") + "</h2>";
-      }
-      html += posterButton(i, state.items[i]);
+    var resume = state.query || state.seriesKey ? [] : visibleContinue();
+    var rowNum = 1;
+    if (resume.length) {
+      html += continueCards(rowNum);
+      rowNum += 1;
     }
-    if (state.hasMore) {
-      html += '<button type="button" class="poster more focusable" data-col="1" data-action="more" data-index="more"><span>Mais títulos</span></button>';
+    var episodeIndexes = [];
+    var episode;
+    for (episode = 0; episode < state.items.length; episode++) {
+      episodeIndexes.push(episode);
+    }
+    var shelves = state.seriesKey ? [{ title: "Episódios", indexes: episodeIndexes }] : (state.query ? [{ title: "Resultados", indexes: episodeIndexes }] : buildShelves(state.items));
+    var s;
+    var n;
+    for (s = 0; s < shelves.length; s++) {
+      html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
+      for (n = 0; n < shelves[s].indexes.length; n++) {
+        var itemIndex = shelves[s].indexes[n];
+        html += posterButton(itemIndex, state.items[itemIndex], rowNum, n);
+      }
+      rowNum += 1;
     }
     html += "</div>";
     stage.innerHTML = html;
+    var field = document.getElementById("catalog-search");
+    if (field) {
+      field.oninput = function () {
+        state.draftQuery = field.value;
+      };
+    }
   }
 
-  function posterButton(index, entry) {
+  function posterButton(index, entry, row, slot) {
     var label = entry.title || entry.series_title || "Sem título";
     if (entry.season_number || entry.episode_number) {
       label = "T" + (entry.season_number || "?") + " E" + (entry.episode_number || "?");
@@ -962,7 +1550,7 @@
     if (entry.logo) {
       art = '<img src="' + esc(entry.logo) + '" alt="" onerror="this.style.visibility=\'hidden\'">';
     }
-    return '<button type="button" class="poster focusable" data-col="1" data-action="play" data-index="' + index + '">' + art + "<span>" + esc(label) + "</span></button>";
+    return '<button type="button" class="poster focusable" data-col="1" data-action="play" data-index="' + index + '" data-row="' + row + '" data-slot="' + slot + '">' + art + "<span>" + esc(label) + "</span></button>";
   }
 
   function renderBrowse() {
@@ -988,6 +1576,15 @@
       }
     }
     var items = "";
+    var resume = state.kind === "movies" ? visibleContinue() : [];
+    if (resume.length) {
+      items += '<p class="row-label">Continuar assistindo</p>';
+      for (i = 0; i < resume.length; i++) {
+        var saved = resume[i];
+        var minutes = Math.floor(saved.position / 60);
+        items += '<button type="button" class="row focusable" data-col="1" data-action="resume" data-resume="' + i + '"><i>▶</i><span>Continuar · ' + minutes + " min · " + esc(saved.title) + "</span></button>";
+      }
+    }
     for (i = 0; i < state.items.length; i++) {
       var entry = state.items[i];
       var label = entry.title || entry.series_title || "Sem título";
@@ -1023,9 +1620,9 @@
   }
 
   function renderSearch() {
-    var html = "<h1>Buscar na playlist</h1>";
-    html += '<p class="status">O teclado abre no celular quando este campo está selecionado.</p>';
-    html += '<input id="title-search" class="focusable" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Digite o título" value="' + esc(state.draftQuery) + '">';
+    var html = state.catalog ? "<h1>Buscar em " + esc(state.catalog.name) + "</h1>" : "<h1>Buscar na playlist</h1>";
+    html += '<p class="status">' + (state.catalog ? "A busca fica só neste streaming." : "O teclado abre no celular quando este campo está selecionado.") + "</p>";
+    html += '<input id="title-search" class="focusable" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="' + (state.catalog ? "Título em " + esc(state.catalog.name) : "Digite o título") + '" value="' + esc(state.draftQuery) + '">';
     html += '<div>' + searchAction("Limpar", "query-clear") + searchAction("Buscar", "query-go") + "</div>";
     stage.innerHTML = html;
     var field = document.getElementById("title-search");
@@ -1054,6 +1651,38 @@
     if (field) {
       state.draftQuery = field.value;
     }
+  }
+
+  function focusCatalogSearch() {
+    var field = document.getElementById("catalog-search");
+    if (!field) {
+      return;
+    }
+    state.column = "1";
+    var nodes = columnNodes("1");
+    var i;
+    for (i = 0; i < nodes.length; i++) {
+      if (nodes[i] === field) {
+        state.itemIndex = i;
+      }
+    }
+    paint();
+    field.focus();
+  }
+
+  function submitCatalogSearch() {
+    var field = document.getElementById("catalog-search");
+    if (field) {
+      state.draftQuery = field.value;
+    }
+    state.query = String(state.draftQuery || "").replace(/^\s+|\s+$/g, "");
+    state.seriesKey = "";
+    state.seriesTitle = "";
+    state.seasons = [];
+    state.season = "";
+    state.itemIndex = 0;
+    state.column = "1";
+    loadStreamerCatalog();
   }
 
   function submitSearch() {
@@ -1114,6 +1743,26 @@
       return;
     }
     var action = target.getAttribute("data-action");
+    if (action === "resume") {
+      var savedItems = visibleContinue();
+      var saved = savedItems[Number(target.getAttribute("data-resume"))] || null;
+      if (saved) {
+        if (saved.catalogId) {
+          state.catalog = streamerById(saved.catalogId) || state.catalog;
+        }
+        play({
+          url: saved.url,
+          title: saved.title,
+          logo: saved.logo,
+          group: saved.group || "",
+          category: saved.category || saved.kind,
+          media_kind: saved.mediaKind || "",
+          kind: saved.kind,
+          catalogId: saved.catalogId || ""
+        });
+      }
+      return;
+    }
     if (action === "catalog") {
       openCatalog(target.getAttribute("data-catalog"));
       return;
@@ -1137,6 +1786,10 @@
     }
     if (action === "query-field") {
       focusSearchField();
+      return;
+    }
+    if (action === "catalog-search") {
+      focusCatalogSearch();
       return;
     }
     if (action === "query-clear") {
@@ -1174,7 +1827,7 @@
   document.addEventListener("keydown", function (event) {
     var code = event.keyCode || event.which;
     if (code === 461 || code === 10009 || code === 27 || code === 8) {
-      var typingField = document.getElementById("title-search");
+      var typingField = document.getElementById("title-search") || document.getElementById("catalog-search");
       if (code === 8 && typingField && document.activeElement === typingField) {
         return;
       }
@@ -1192,9 +1845,12 @@
       return;
     }
     if (code === 37 || code === 38 || code === 39 || code === 40) {
-      var searchField = document.getElementById("title-search");
+      var searchField = document.getElementById("title-search") || document.getElementById("catalog-search");
       if (searchField && document.activeElement === searchField && code !== 40) {
         return;
+      }
+      if (code === 40 && searchField && document.activeElement === searchField && searchField.blur) {
+        searchField.blur();
       }
       event.preventDefault();
       if (code === 37) {
@@ -1212,6 +1868,11 @@
       event.preventDefault();
       if (state.screen === "search") {
         submitSearch();
+        return;
+      }
+      var catalogField = document.getElementById("catalog-search");
+      if (catalogField && document.activeElement === catalogField) {
+        submitCatalogSearch();
         return;
       }
       activateCurrent();

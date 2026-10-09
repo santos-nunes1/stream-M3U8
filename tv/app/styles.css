@@ -369,6 +369,24 @@ body.themed #app {
   font-size: 40px;
 }
 
+#catalog-search {
+  display: block;
+  clear: both;
+  width: 920px;
+  box-sizing: border-box;
+  margin: 8px 0 16px;
+  padding: 16px 22px;
+  border-radius: 16px;
+  border: 3px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 30px;
+}
+
+#catalog-search[data-selected="1"] {
+  border-color: #fff;
+}
+
 .poster-grid {
   height: 760px;
   overflow: hidden;
@@ -377,7 +395,7 @@ body.themed #app {
 .row-label {
   display: block;
   clear: both;
-  margin: 8px 0 12px;
+  margin: 22px 0 12px;
   color: #fff;
   font-size: 28px;
 }
@@ -413,6 +431,14 @@ body.themed #app {
   padding: 8px 10px 0;
   font-size: 22px;
   overflow: hidden;
+}
+
+.progress {
+  position: absolute;
+  left: 0;
+  top: 294px;
+  height: 6px;
+  background: #e50914;
 }
 
 .poster.more span {

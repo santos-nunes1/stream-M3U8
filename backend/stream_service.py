@@ -590,6 +590,12 @@ def parse_extinf_attributes(line: str) -> Dict[str, str]:
 def classify_playlist_category(title: str, group: str, url: str) -> str:
     title_group = f"{title} {group}".lower()
     url_value = url.lower()
+    if "/live/" in url_value:
+        return "tv"
+    if "/movie/" not in url_value and any(
+        token in title_group for token in ("canal", "canais", "24h", "24 horas", "ao vivo")
+    ):
+        return "tv"
 
     if (
         "filme" in title_group
