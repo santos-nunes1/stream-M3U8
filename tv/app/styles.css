@@ -449,6 +449,25 @@ body.themed #app {
   outline: 4px solid #fff;
 }
 
+.remove-link {
+  display: inline-block;
+  width: 250px;
+  margin: 0 16px 24px 0;
+  padding: 16px 0;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 22px;
+  text-align: center;
+  vertical-align: top;
+}
+
+.remove-link[data-selected="1"] {
+  border-color: #fff;
+  background: #3a1212;
+}
+
 .poster.more span {
   height: 360px;
   line-height: 360px;

@@ -20,6 +20,7 @@
   var scrollTops = { groups: 0, list: 0 };
   var MODES = [
     { id: "tv", label: "Ao vivo" },
+    { id: "continue", label: "Continuar assistindo" },
     { id: "movies", label: "Filmes" },
     { id: "series", label: "Séries" },
     { id: "search", label: "Buscar" }
@@ -300,7 +301,7 @@
       moveSeries(direction);
       return;
     }
-    if ((state.kind === "series" || state.kind === "movies") && state.column !== "2") {
+    if ((state.kind === "series" || state.kind === "movies" || state.kind === "continue") && state.column !== "2") {
       moveSeries(direction);
       return;
     }
@@ -317,7 +318,7 @@
         state.modeIndex = index + 1;
       }
       if (direction === "down") {
-        state.column = state.screen === "search" || state.kind === "series" || state.kind === "movies" ? "1" : "0";
+        state.column = state.screen === "search" || state.kind === "series" || state.kind === "movies" || state.kind === "continue" ? "1" : "0";
       }
       paint();
       if (direction === "left" || direction === "right") {
@@ -472,6 +473,23 @@
   }
 
   function selectKind(kind, stayOnTabs) {
+    if (kind === "continue") {
+      state.kind = "continue";
+      state.catalog = null;
+      state.seriesKey = "";
+      state.seriesTitle = "";
+      state.seasons = [];
+      state.season = "";
+      state.query = "";
+      state.group = "";
+      state.items = [];
+      state.screen = "browse";
+      state.itemIndex = 0;
+      state.column = stayOnTabs ? "2" : "1";
+      state.message = "";
+      render();
+      return;
+    }
     if (kind === "search") {
       if (!stayOnTabs) {
         state.catalog = null;
@@ -887,6 +905,9 @@
   }
 
   function matchesContinueView(item) {
+    if (state.kind === "continue") {
+      return item.kind === "movies" || item.kind === "series" || !!item.seriesKey;
+    }
     if (state.kind === "movies") {
       return item.kind === "movies";
     }
@@ -1529,6 +1550,8 @@
       renderPicker();
     } else if (state.screen === "search") {
       renderSearch();
+    } else if (state.kind === "continue") {
+      renderContinuePage();
     } else if (state.kind === "series" && !state.catalog) {
       renderStreamers();
     }     else if (state.kind === "series" && state.catalog) {
@@ -1554,6 +1577,8 @@
       hint.innerHTML = "A busca fica nesta aba · OK no campo abre o teclado · Resultados não mudam de aba";
     } else if (state.catalog) {
       hint.innerHTML = "Voltar volta às abas · Setas nos cartazes · OK abre";
+    } else if (state.kind === "continue") {
+      hint.innerHTML = "Séries e filmes já iniciados · OK continua · Para baixo remove o título";
     } else if (state.kind === "series") {
       hint.innerHTML = "Escolha o streaming · OK abre o catálogo · Voltar sai";
     } else {
@@ -1633,6 +1658,78 @@
       modes += '<button type="button" class="mode focusable' + current + '" data-col="2" data-action="mode" data-kind="' + MODES[i].id + '">' + esc(MODES[i].label) + "</button>";
     }
     return modes;
+  }
+
+  function removeContinue(index) {
+    var visible = visibleContinue();
+    var item = visible[index];
+    if (!item) {
+      return;
+    }
+    var all = readContinue();
+    var next = [];
+    var i;
+    for (i = 0; i < all.length; i++) {
+      var drop = false;
+      if (item.seriesKey && all[i].seriesKey === item.seriesKey) {
+        drop = true;
+      }
+      if (!item.seriesKey && all[i].url === item.url) {
+        drop = true;
+      }
+      if (!drop) {
+        next.push(all[i]);
+      }
+    }
+    writeContinue(next);
+    state.itemIndex = 0;
+    state.column = "1";
+    state.message = next.length ? "Título removido da lista." : "Nada iniciado ainda.";
+    render();
+  }
+
+  function continueShelf(title, indexes, items, row) {
+    var html = "";
+    var i;
+    if (!indexes.length) {
+      return "";
+    }
+    html += '<h2 class="row-label">' + esc(title) + "</h2>";
+    for (i = 0; i < indexes.length; i++) {
+      html += resumePoster(indexes[i], items[indexes[i]], row, i);
+    }
+    for (i = 0; i < indexes.length; i++) {
+      html += '<button type="button" class="remove-link focusable" data-col="1" data-action="remove-continue" data-resume="' + indexes[i] + '" data-row="' + (row + 1) + '" data-slot="' + i + '">Remover</button>';
+    }
+    return html;
+  }
+
+  function renderContinuePage() {
+    var items = visibleContinue();
+    var series = [];
+    var movies = [];
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (items[i].kind === "series" || items[i].seriesKey) {
+        series.push(i);
+      } else {
+        movies.push(i);
+      }
+    }
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += '<h1 class="shelf-title">Continuar assistindo</h1>';
+    html += '<p class="status">' + esc(state.message || (items.length ? items.length + " títulos" : "Nada iniciado ainda.")) + "</p>";
+    html += '<div id="list" class="poster-grid">';
+    var row = 0;
+    if (series.length) {
+      html += continueShelf("Séries", series, items, row);
+      row += 2;
+    }
+    if (movies.length) {
+      html += continueShelf("Filmes", movies, items, row);
+    }
+    html += "</div>";
+    stage.innerHTML = html;
   }
 
   function continueCards(row) {
@@ -1743,7 +1840,9 @@
   function playNextEpisode(saved) {
     state.seriesKey = saved.seriesKey || "";
     state.seriesTitle = saved.seriesTitle || saved.title || "Série";
-    state.kind = "series";
+    if (state.kind !== "continue") {
+      state.kind = "series";
+    }
     if (saved.catalogId) {
       state.catalog = streamerById(saved.catalogId) || state.catalog;
     }
@@ -2581,6 +2680,10 @@
       return;
     }
     var action = target.getAttribute("data-action");
+    if (action === "remove-continue") {
+      removeContinue(Number(target.getAttribute("data-resume")));
+      return;
+    }
     if (action === "resume") {
       var savedItems = visibleContinue();
       var saved = savedItems[Number(target.getAttribute("data-resume"))] || null;
@@ -2595,7 +2698,9 @@
         if (saved.seriesKey) {
           state.seriesKey = saved.seriesKey;
           state.seriesTitle = saved.seriesTitle || saved.title || "";
-          state.kind = "series";
+          if (state.kind !== "continue") {
+            state.kind = "series";
+          }
         }
         play({
           url: saved.url,
