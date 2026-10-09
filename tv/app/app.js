@@ -8,6 +8,7 @@
   var avObject = document.querySelector("#av-player");
   var lastNav = 0;
   var groupTimer = 0;
+  var modeTimer = 0;
   var loadToken = 0;
   var failing = false;
   var scrollTops = { groups: 0, list: 0 };
@@ -19,7 +20,7 @@
   ];
   var state = {
     screen: "browse",
-    column: "1",
+    column: "2",
     kind: "tv",
     group: "",
     groups: [],
@@ -43,7 +44,11 @@
   };
 
   function esc(value) {
-    return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
+    var text = "";
+    if (value !== undefined && value !== null) {
+      text = String(value);
+    }
+    return text.replace(/[&<>"']/g, function (char) {
       if (char === "&") {
         return "&amp;";
       }
@@ -97,7 +102,9 @@
 
   function ensureVisible(el) {
     var parent = el.parentNode;
-    while (parent && parent.id !== "groups" && parent.id !== "list" && parent !== document.body) parent = parent.parentNode;
+    while (parent && parent.id !== "groups" && parent.id !== "list" && parent !== document.body) {
+      parent = parent.parentNode;
+    }
     if (!parent || (parent.id !== "groups" && parent.id !== "list")) {
       return;
     }
@@ -188,19 +195,40 @@
       return;
     }
     var index = columnIndex(state.column);
+    if (state.column === "2") {
+      if (direction === "left" && index > 0) {
+        state.modeIndex = index - 1;
+      }
+      if (direction === "right" && index < nodes.length - 1) {
+        state.modeIndex = index + 1;
+      }
+      if (direction === "down") {
+        state.column = "0";
+      }
+      paint();
+      if (direction === "left" || direction === "right") {
+        scheduleModeLoad();
+      }
+      return;
+    }
     if (direction === "up") {
+      if (index <= 0) {
+        state.column = "2";
+        paint();
+        return;
+      }
       index -= 1;
     }
     if (direction === "down") {
       index += 1;
     }
-    if (direction === "left") {
-      state.column = state.column === "1" ? "0" : "2";
+    if (direction === "left" && state.column === "1") {
+      state.column = "0";
       paint();
       return;
     }
-    if (direction === "right") {
-      state.column = state.column === "2" ? "0" : "1";
+    if (direction === "right" && state.column === "0") {
+      state.column = "1";
       paint();
       return;
     }
@@ -212,9 +240,49 @@
     }
     setColumnIndex(state.column, index);
     paint();
-    if (state.column === "0") {
+    if (state.column === "0" && (direction === "up" || direction === "down")) {
       scheduleSideLoad();
     }
+  }
+
+  function scheduleModeLoad() {
+    clearTimeout(modeTimer);
+    modeTimer = setTimeout(function () {
+      var tabs = columnNodes("2");
+      var tab = tabs[state.modeIndex];
+      if (!tab) {
+        return;
+      }
+      selectKind(tab.getAttribute("data-kind"), true);
+    }, 250);
+  }
+
+  function selectKind(kind, stayOnTabs) {
+    if (kind === "search") {
+      if (!stayOnTabs) {
+        state.draftQuery = state.query;
+        state.screen = "search";
+        state.searchIndex = 0;
+        render();
+      }
+      return;
+    }
+    if (kind === state.kind && !state.seriesKey && !state.query && state.groups.length) {
+      return;
+    }
+    state.kind = kind;
+    state.group = "";
+    state.groups = [];
+    state.groupIndex = 0;
+    state.seriesKey = "";
+    state.seriesTitle = "";
+    state.seasons = [];
+    state.season = "";
+    state.query = "";
+    state.offset = 0;
+    state.itemIndex = 0;
+    state.column = stayOnTabs ? "2" : "1";
+    loadItems(false);
   }
 
   function scheduleSideLoad() {
@@ -569,7 +637,7 @@
     if (list) {
       list.scrollTop = scrollTops.list || 0;
     }
-    hint.innerHTML = "Esquerda e direita trocam a coluna · Cima e baixo percorrem · OK reproduz · Voltar retorna";
+    hint.innerHTML = "No topo, esquerda e direita mudam Ao vivo, Filmes, Séries e Buscar · Para baixo entra na lista · OK reproduz";
     if (state.screen === "search") {
       paintSearch();
     } else {
@@ -707,30 +775,7 @@
     }
     var action = target.getAttribute("data-action");
     if (action === "mode") {
-      var kind = target.getAttribute("data-kind");
-      if (kind === "search") {
-        state.draftQuery = state.query;
-        state.screen = "search";
-        state.searchIndex = 0;
-        render();
-        return;
-      }
-      if (kind === state.kind && !state.seriesKey && !state.query) {
-        return;
-      }
-      state.kind = kind;
-      state.group = "";
-      state.groups = [];
-      state.groupIndex = 0;
-      state.seriesKey = "";
-      state.seriesTitle = "";
-      state.seasons = [];
-      state.season = "";
-      state.query = "";
-      state.offset = 0;
-      state.itemIndex = 0;
-      state.column = "1";
-      loadItems(false);
+      selectKind(target.getAttribute("data-kind"), false);
       return;
     }
     if (action === "group" || action === "season") {
@@ -777,7 +822,9 @@
 
   document.addEventListener("click", function (event) {
     var node = event.target;
-    while (node && node !== document && !(node.getAttribute && node.getAttribute("data-action"))) node = node.parentNode;
+    while (node && node !== document && !(node.getAttribute && node.getAttribute("data-action"))) {
+      node = node.parentNode;
+    }
     if (!node || node === document) {
       return;
     }
