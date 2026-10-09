@@ -19,8 +19,8 @@
   var failing = false;
   var scrollTops = { groups: 0, list: 0 };
   var MODES = [
-    { id: "tv", label: "Ao vivo" },
     { id: "continue", label: "Continuar assistindo" },
+    { id: "tv", label: "Ao vivo" },
     { id: "movies", label: "Filmes" },
     { id: "series", label: "Séries" },
     { id: "search", label: "Buscar" }
@@ -70,7 +70,7 @@
     hasMore: false,
     items: [],
     itemIndex: 0,
-    modeIndex: 0,
+    modeIndex: 1,
     message: "Carregando a programação...",
     activeStreamId: "",
     playingTitle: "",
@@ -462,6 +462,7 @@
 
   function scheduleModeLoad() {
     clearTimeout(modeTimer);
+    loadToken += 1;
     modeTimer = setTimeout(function () {
       var tabs = columnNodes("2");
       var tab = tabs[state.modeIndex];
@@ -469,10 +470,11 @@
         return;
       }
       selectKind(tab.getAttribute("data-kind"), true);
-    }, 80);
+    }, 700);
   }
 
   function selectKind(kind, stayOnTabs) {
+    clearTimeout(modeTimer);
     if (kind === "continue") {
       state.kind = "continue";
       state.catalog = null;
@@ -1746,14 +1748,25 @@
     return html;
   }
 
-  function resumePoster(index, item, row, slot) {
-    var label = item.title || "Sem título";
+  function continueTitle(item) {
     if (item.seriesTitle) {
-      label = item.seriesTitle + " · T" + (item.seasonNumber || "?") + " E" + (item.episodeNumber || "?");
-      if (item.finished) {
-        label = item.seriesTitle + " · próximo episódio";
-      }
+      return item.seriesTitle;
     }
+    var text = String(item.title || "Sem título");
+    if (item.seriesKey || item.kind === "series") {
+      text = text.replace(/\[[^\]]*\]/g, " ");
+      text = text.replace(/\b(s\d+\s*e\d+|t\d+\s*e\d+|ep\s*\d+)\b/ig, " ");
+      text = text.replace(/\s+/g, " ");
+      text = text.replace(/^\s+|\s+$/g, "");
+    }
+    if (item.kind === "movies") {
+      return movieDisplayTitle({ title: text });
+    }
+    return text || item.title || "Sem título";
+  }
+
+  function resumePoster(index, item, row, slot) {
+    var label = continueTitle(item);
     var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
     var width = 8;
     if (item.logo) {
