@@ -307,6 +307,44 @@ body.playing #hud { display: block; }
 
 body.playing #hud.hud-hidden { display: none; }
 
+#upnext {
+  display: none;
+  position: fixed;
+  right: 48px;
+  bottom: 48px;
+  width: 520px;
+  padding: 22px 26px;
+  border-radius: 16px;
+  background: rgba(12, 12, 12, 0.92);
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  z-index: 7;
+}
+
+#upnext small,
+#upnext strong,
+#upnext span { display: block; }
+
+#upnext small {
+  color: #e50914;
+  font-size: 18px;
+  letter-spacing: 1px;
+}
+
+#upnext strong {
+  margin-top: 8px;
+  font-size: 28px;
+}
+
+#upnext span {
+  margin-top: 10px;
+  color: #d0d0d0;
+  font-size: 20px;
+}
+
+body.playing #upnext { display: block; }
+
+body.playing #upnext.upnext-hidden { display: none; }
+
 body.playing.use-video #player { display: block; }
 
 body.themed .top {

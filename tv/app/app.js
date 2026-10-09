@@ -7,6 +7,12 @@
   var hudStatus = document.querySelector("#hud-status");
   var hudTimer = 0;
   var progressTimer = 0;
+  var upNextTimer = 0;
+  var nextToken = 0;
+  var playbackGen = 0;
+  var upNextBox = document.querySelector("#upnext");
+  var upNextTitle = document.querySelector("#upnext-title");
+  var upNextCount = document.querySelector("#upnext-count");
   var video = document.querySelector("#player");
   var avObject = document.querySelector("#av-player");
   var groupTimer = 0;
@@ -80,6 +86,13 @@
     watching: null,
     resumeSeconds: 0,
     resumeApplied: false,
+    forceFinished: false,
+    queuedNext: null,
+    nextReady: false,
+    pendingAdvance: false,
+    advancing: false,
+    upNextVisible: false,
+    upNextCancelled: false,
     searchIndex: 0,
     picker: null,
     pickerTitle: ""
@@ -620,6 +633,13 @@
       return;
     }
     if (document.body.className.indexOf("playing") !== -1) {
+      if (state.upNextVisible && !state.upNextCancelled) {
+        state.upNextCancelled = true;
+        state.pendingAdvance = false;
+        hideUpNext();
+        showHud("Reprodução automática cancelada");
+        return;
+      }
       stopPlayback();
       render();
       return;
@@ -1077,6 +1097,13 @@
     kept.seasonNumber = state.watching.seasonNumber || "";
     kept.episodeNumber = state.watching.episodeNumber || "";
     var finished = kept.duration > 60 && kept.position > kept.duration * 0.92;
+    if (state.forceFinished) {
+      if (kept.duration > 60) {
+        kept.position = kept.duration;
+      }
+      finished = true;
+      state.forceFinished = false;
+    }
     kept.finished = finished;
     if (kept.seriesKey) {
       rememberEpisode(kept.seriesKey, {
@@ -1121,7 +1148,9 @@
 
   function armResume() {
     clearInterval(progressTimer);
+    clearInterval(upNextTimer);
     progressTimer = setInterval(saveWatching, 8000);
+    upNextTimer = setInterval(watchCredits, 1000);
     if (!state.resumeSeconds) {
       return;
     }
@@ -1303,6 +1332,7 @@
     };
     state.resumeSeconds = savedPosition(entry.url, entry);
     state.resumeApplied = false;
+    prepareNextEpisode();
     render();
     api("/stream/start", {
       method: "POST",
@@ -1315,6 +1345,7 @@
       }
     }, function (error, payload) {
       if (error) {
+        document.body.className = shellClass();
         state.message = error.message;
         render();
         return;
@@ -1325,6 +1356,7 @@
         playbackUrl = API_BASE + playbackUrl;
       }
       if (!playbackUrl) {
+        document.body.className = shellClass();
         state.message = "O servidor não devolveu o vídeo.";
         render();
         return;
@@ -1348,6 +1380,7 @@
   }
 
   function playUrl(url) {
+    var generation = ++playbackGen;
     failing = false;
     state.paused = false;
     document.body.className = shellClass("playing");
@@ -1389,12 +1422,15 @@
           },
           oncurrentplaytime: function () {},
           onstreamcompleted: function () {
-            showHud("Fim do vídeo");
+            if (generation !== playbackGen) {
+              return;
+            }
+            finishOrAdvance();
           },
           onevent: function () {},
           onsubtitlechange: function () {},
           onerror: function () {
-            playWithVideo(url);
+            playWithVideo(url, generation);
           }
         });
         try {
@@ -1407,22 +1443,28 @@
             showHud(state.resumeSeconds ? "Continuando de onde parou" : "Reproduzindo");
             armResume();
           } catch (ignore) {
-            playWithVideo(url);
+            playWithVideo(url, generation);
           }
         }, function () {
-          playWithVideo(url);
+          playWithVideo(url, generation);
         });
         return;
       } catch (ignore) {}
     }
-    playWithVideo(url);
+    playWithVideo(url, generation);
   }
 
-  function playWithVideo(url) {
+  function playWithVideo(url, generation) {
     document.body.className = shellClass("playing use-video");
     showHud("Abrindo player...");
     video.onerror = function () {
       failPlayback("A TV não conseguiu reproduzir este título.");
+    };
+    video.onended = function () {
+      if (generation !== playbackGen) {
+        return;
+      }
+      finishOrAdvance();
     };
     video.src = url;
     var started = video.play();
@@ -1512,7 +1554,15 @@
 
   function stopPlayback() {
     saveWatching();
+    nextToken += 1;
+    state.queuedNext = null;
+    state.nextReady = false;
+    state.pendingAdvance = false;
+    state.upNextCancelled = false;
+    hideUpNext();
+    playbackGen += 1;
     clearInterval(progressTimer);
+    clearInterval(upNextTimer);
     state.paused = false;
     clearTimeout(hudTimer);
     if (hud) {
@@ -1921,6 +1971,226 @@
       }
     }
     return null;
+  }
+
+  function hideUpNext() {
+    state.upNextVisible = false;
+    if (upNextBox) {
+      upNextBox.className = "upnext-hidden";
+    }
+  }
+
+  function episodeCardTitle(entry) {
+    var season = episodeNumber(entry.season_number);
+    var episode = episodeNumber(entry.episode_number);
+    var name = state.seriesTitle || entry.series_title || "Série";
+    var ep = "";
+    if (season && episode) {
+      ep = episode < 10 ? "0" + episode : String(episode);
+      return name + " · T" + season + " E" + ep;
+    }
+    return entry.title || name;
+  }
+
+  function pickAutoVariant(entry) {
+    var list = entry.variants && entry.variants.length ? entry.variants : [entry];
+    var prefer = variantKind(state.watching || {});
+    var chosen = null;
+    var i;
+    if (prefer) {
+      for (i = 0; i < list.length; i++) {
+        if (variantKind(list[i]) === prefer) {
+          if (!chosen || variantScore(list[i]) > variantScore(chosen)) {
+            chosen = list[i];
+          }
+        }
+      }
+    }
+    if (!chosen) {
+      chosen = list[0];
+      for (i = 1; i < list.length; i++) {
+        if (variantScore(list[i]) > variantScore(chosen)) {
+          chosen = list[i];
+        }
+      }
+    }
+    return {
+      url: chosen.url,
+      title: chosen.title,
+      logo: chosen.logo || state.seriesLogo || "",
+      group: chosen.group || "",
+      category: chosen.category || "series",
+      media_kind: chosen.media_kind || "",
+      kind: "series",
+      series_key: chosen.series_key || (state.watching && state.watching.seriesKey) || state.seriesKey || "",
+      series_title: chosen.series_title || state.seriesTitle || "",
+      season_number: chosen.season_number || "",
+      episode_number: chosen.episode_number || ""
+    };
+  }
+
+  function prepareNextEpisode() {
+    var saved = state.watching;
+    var token = ++nextToken;
+    state.queuedNext = null;
+    state.nextReady = false;
+    state.pendingAdvance = false;
+    state.upNextCancelled = false;
+    hideUpNext();
+    if (!saved || saved.kind !== "series" || !saved.seriesKey) {
+      state.nextReady = true;
+      return;
+    }
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "series",
+        group: "",
+        query: "",
+        series_key: saved.seriesKey,
+        season: "",
+        offset: 0,
+        limit: 500,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      if (token !== nextToken || !state.watching || state.watching.url !== saved.url) {
+        return;
+      }
+      state.nextReady = true;
+      if (error || !payload) {
+        if (state.pendingAdvance) {
+          state.pendingAdvance = false;
+          showHud("Fim do episódio");
+        }
+        return;
+      }
+      var next = nextEpisode(uniqueEpisodes(payload.entries || []), saved.seasonNumber, saved.episodeNumber);
+      if (!next) {
+        if (state.pendingAdvance) {
+          state.pendingAdvance = false;
+          showHud("Fim da série");
+        }
+        return;
+      }
+      state.queuedNext = pickAutoVariant(next);
+      if (state.pendingAdvance && !state.upNextCancelled) {
+        state.pendingAdvance = false;
+        advanceToNext();
+      }
+    });
+  }
+
+  function showUpNext(seconds) {
+    if (!upNextBox || !state.queuedNext || state.upNextCancelled) {
+      return;
+    }
+    state.upNextVisible = true;
+    upNextBox.className = "";
+    if (upNextTitle) {
+      upNextTitle.innerHTML = esc(episodeCardTitle(state.queuedNext));
+    }
+    if (upNextCount) {
+      var left = seconds;
+      if (left < 0) {
+        left = 0;
+      }
+      upNextCount.innerHTML = "Começa em " + left + "s · OK agora · Voltar cancela";
+    }
+  }
+
+  function watchCredits() {
+    if (state.paused || state.advancing || state.upNextCancelled || !state.queuedNext) {
+      return;
+    }
+    if (!state.watching || state.watching.kind !== "series" || !state.watching.seriesKey) {
+      return;
+    }
+    var progress = currentProgress();
+    if (!progress.duration || progress.duration < 60) {
+      return;
+    }
+    var left = progress.duration - progress.position;
+    if (left > 15) {
+      if (state.upNextVisible) {
+        hideUpNext();
+      }
+      return;
+    }
+    showUpNext(Math.ceil(left));
+    if (left <= 1) {
+      advanceToNext();
+    }
+  }
+
+  function finishOrAdvance() {
+    if (state.advancing) {
+      return;
+    }
+    if (!state.watching || state.watching.kind !== "series" || !state.watching.seriesKey) {
+      showHud("Fim do vídeo");
+      return;
+    }
+    if (state.upNextCancelled) {
+      showHud("Fim do episódio");
+      return;
+    }
+    if (state.queuedNext) {
+      advanceToNext();
+      return;
+    }
+    if (state.nextReady) {
+      showHud("Fim da série");
+      return;
+    }
+    state.pendingAdvance = true;
+    showHud("Abrindo o próximo episódio...");
+  }
+
+  function haltPlayer() {
+    playbackGen += 1;
+    clearInterval(progressTimer);
+    clearInterval(upNextTimer);
+    var nativePlayer = window.AndroidPlayer;
+    if (nativePlayer && nativePlayer.stop) {
+      nativePlayer.stop();
+    }
+    var bridge = window.webapis;
+    var av = bridge && bridge.avplay;
+    if (av) {
+      try {
+        av.stop();
+      } catch (ignore) {}
+      try {
+        av.close();
+      } catch (ignore) {}
+    }
+    video.onerror = null;
+    video.onended = null;
+    video.removeAttribute("src");
+    try {
+      video.load();
+    } catch (ignore) {}
+    if (state.activeStreamId) {
+      api("/stream/stop", { method: "POST", body: { stream_id: state.activeStreamId } }, function () {});
+      state.activeStreamId = "";
+    }
+  }
+
+  function advanceToNext() {
+    if (state.advancing || !state.queuedNext) {
+      return;
+    }
+    state.advancing = true;
+    state.pendingAdvance = false;
+    hideUpNext();
+    var next = state.queuedNext;
+    state.queuedNext = null;
+    state.forceFinished = true;
+    saveWatching();
+    haltPlayer();
+    state.advancing = false;
+    play(next);
   }
 
   function playNextEpisode(saved) {
@@ -2915,6 +3185,9 @@
     }
     if (document.body.className.indexOf("playing") !== -1) {
       event.preventDefault();
+      if ((code === 13 || code === 23 || code === 29443 || code === 39) && state.upNextVisible && state.queuedNext && !state.upNextCancelled) {
+        advanceToNext();
+      }
       return;
     }
     if (code === 37 || code === 38 || code === 39 || code === 40) {
