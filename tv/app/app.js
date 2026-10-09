@@ -77,7 +77,9 @@
     watching: null,
     resumeSeconds: 0,
     resumeApplied: false,
-    searchIndex: 0
+    searchIndex: 0,
+    picker: null,
+    pickerTitle: ""
   };
 
   function esc(value) {
@@ -265,6 +267,17 @@
       return state.catalog.search + " " + state.query;
     }
     return state.catalog.search;
+  }
+
+  function catalogIdFor(entry) {
+    var hay = foldTitle((entry.group || "") + " " + ((entry.groups && entry.groups.join) ? entry.groups.join(" ") : ""));
+    var i;
+    for (i = 0; i < STREAMERS.length; i++) {
+      if (hay.indexOf(STREAMERS[i].search) !== -1) {
+        return STREAMERS[i].id;
+      }
+    }
+    return "";
   }
 
   function streamerById(id) {
@@ -554,6 +567,12 @@
   }
 
   function goBack() {
+    if (state.picker && state.picker.length) {
+      state.picker = null;
+      state.column = "1";
+      render();
+      return;
+    }
     if (document.body.className.indexOf("playing") !== -1) {
       stopPlayback();
       render();
@@ -572,6 +591,14 @@
         scrollTops.list = 0;
       }
       paint();
+      return;
+    }
+    if (state.seriesKey && state.season) {
+      state.season = "";
+      state.itemIndex = 0;
+      state.column = "1";
+      state.message = state.seasons.length ? state.seasons.length + " temporadas" : state.seriesTitle;
+      render();
       return;
     }
     if (state.seriesKey) {
@@ -719,6 +746,12 @@
       state.items = append ? state.items.concat(batch) : batch;
       if (state.seriesKey) {
         state.items = uniqueEpisodes(state.items);
+        if (!state.season && state.seasons.length < 2) {
+          state.seasons = seasonsFromItems(state.items);
+        }
+        if (!state.season && state.seasons.length > 1) {
+          state.message = state.seasons.length + " temporadas";
+        }
       }
       state.total = payload.total || state.items.length;
       state.offset = requestOffset + batch.length;
@@ -844,20 +877,106 @@
   function visibleContinue() {
     var all = readContinue();
     var list = [];
+    var seenSeries = {};
     var i;
     for (i = 0; i < all.length; i++) {
-      if (all[i].position >= 20 && matchesContinueView(all[i])) {
-        list.push(all[i]);
+      var item = all[i];
+      if (item.position < 20 && !item.finished) {
+        continue;
       }
+      if (!matchesContinueView(item)) {
+        continue;
+      }
+      if (item.seriesKey) {
+        if (seenSeries[item.seriesKey]) {
+          continue;
+        }
+        seenSeries[item.seriesKey] = 1;
+      }
+      list.push(item);
     }
     return list;
   }
 
-  function savedPosition(url) {
+  function readSeriesProgress() {
+    try {
+      var raw = localStorage.getItem("streamcorsario.seriesProgress");
+      var parsed = raw ? JSON.parse(raw) : {};
+      if (parsed) {
+        return parsed;
+      }
+    } catch (ignore) {}
+    return {};
+  }
+
+  function writeSeriesProgress(book) {
+    try {
+      localStorage.setItem("streamcorsario.seriesProgress", JSON.stringify(book));
+    } catch (ignore) {}
+  }
+
+  function episodeWatch(seriesKey, entry) {
+    if (!seriesKey) {
+      return null;
+    }
+    var list = readSeriesProgress()[seriesKey] || [];
+    var id = episodeIdentity(entry);
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i].id === id) {
+        return list[i];
+      }
+    }
+    return null;
+  }
+
+  function rememberEpisode(seriesKey, record) {
+    if (!seriesKey) {
+      return;
+    }
+    var book = readSeriesProgress();
+    var list = book[seriesKey] || [];
+    var next = [];
+    var i;
+    next.push(record);
+    for (i = 0; i < list.length; i++) {
+      if (list[i].id !== record.id && next.length < 400) {
+        next.push(list[i]);
+      }
+    }
+    book[seriesKey] = next;
+    writeSeriesProgress(book);
+  }
+
+  function seasonWatchedCount(seriesKey, season) {
+    var list = readSeriesProgress()[seriesKey] || [];
+    var prefix = String(episodeNumber(season)) + ":";
+    var count = 0;
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i].finished && String(list[i].id || "").indexOf(prefix) === 0) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  function savedPosition(url, entry) {
+    if (entry && state.seriesKey) {
+      var watch = episodeWatch(state.seriesKey, entry);
+      if (watch && watch.finished) {
+        return 0;
+      }
+      if (watch && watch.position >= 20) {
+        if (!watch.duration || watch.position < watch.duration - 30) {
+          return watch.position;
+        }
+      }
+    }
     var items = readContinue();
     var i;
     for (i = 0; i < items.length; i++) {
-      if (items[i].url === url && items[i].position >= 20) {
+      if (items[i].url === url && items[i].position >= 20 && !items[i].finished) {
         if (!items[i].duration || items[i].position < items[i].duration - 30) {
           return items[i].position;
         }
@@ -904,15 +1023,29 @@
       position: Math.floor(progress.position),
       duration: Math.floor(progress.duration || 0)
     };
+    kept.seriesKey = state.watching.seriesKey || "";
+    kept.seriesTitle = state.watching.seriesTitle || "";
+    kept.seasonNumber = state.watching.seasonNumber || "";
+    kept.episodeNumber = state.watching.episodeNumber || "";
     var finished = kept.duration > 60 && kept.position > kept.duration * 0.92;
+    kept.finished = finished;
+    if (kept.seriesKey) {
+      rememberEpisode(kept.seriesKey, {
+        id: episodeNumber(kept.seasonNumber) + ":" + episodeNumber(kept.episodeNumber),
+        url: kept.url,
+        title: kept.title,
+        position: kept.position,
+        duration: kept.duration,
+        finished: finished
+      });
+    }
     var items = readContinue();
     var next = [];
     var i;
-    if (!finished) {
-      next.push(kept);
-    }
+    next.push(kept);
     for (i = 0; i < items.length; i++) {
-      if (items[i].url !== kept.url && next.length < 24) {
+      var sameSeries = kept.seriesKey && items[i].seriesKey === kept.seriesKey;
+      if (items[i].url !== kept.url && !sameSeries && next.length < 24) {
         next.push(items[i]);
       }
     }
@@ -1073,15 +1206,28 @@
   }
 
   function play(entry) {
+    if (entry.variants && entry.variants.length > 1) {
+      openVariantPicker(entry);
+      return;
+    }
     if (entry.series_key && !entry.url) {
       state.seriesKey = entry.series_key;
       state.seriesTitle = entry.title || entry.series_title || "Série";
       state.seasons = entry.seasons || [];
       state.season = "";
+      state.items = [];
       state.groupIndex = 0;
       state.itemIndex = 0;
       state.column = "1";
       state.offset = 0;
+      if (state.seasons.length > 1) {
+        state.message = state.seasons.length + " temporadas";
+        render();
+        return;
+      }
+      if (state.seasons.length === 1) {
+        state.season = String(state.seasons[0].season || "");
+      }
       loadItems(false);
       return;
     }
@@ -1096,13 +1242,17 @@
       url: entry.url,
       title: state.playingTitle,
       logo: entry.logo || "",
-      kind: entry.kind || state.kind,
-      catalogId: state.catalog ? state.catalog.id : (entry.catalogId || ""),
+      kind: entry.series_key || state.seriesKey || entry.category === "series" ? "series" : (entry.kind || state.kind),
+      catalogId: state.catalog ? state.catalog.id : (entry.catalogId || catalogIdFor(entry)),
       group: entry.group || "",
       category: entry.category || state.kind,
-      mediaKind: entry.media_kind || ""
+      mediaKind: entry.media_kind || "",
+      seriesKey: entry.series_key || state.seriesKey || "",
+      seriesTitle: state.seriesTitle || entry.series_title || "",
+      seasonNumber: entry.season_number || "",
+      episodeNumber: entry.episode_number || ""
     };
-    state.resumeSeconds = savedPosition(entry.url);
+    state.resumeSeconds = savedPosition(entry.url, entry);
     state.resumeApplied = false;
     render();
     api("/stream/start", {
@@ -1351,7 +1501,9 @@
     if (document.body.className.indexOf("playing") === -1) {
       document.body.className = shellClass();
     }
-    if (state.screen === "search") {
+    if (state.picker && state.picker.length) {
+      renderPicker();
+    } else if (state.screen === "search") {
       renderSearch();
     } else if (state.kind === "series" && !state.catalog) {
       renderStreamers();
@@ -1370,7 +1522,9 @@
     if (list) {
       list.scrollTop = scrollTops.list || 0;
     }
-    if (state.screen === "search") {
+    if (state.picker && state.picker.length) {
+      hint.innerHTML = "Dublado vem primeiro · OK reproduz o link escolhido · Voltar fecha a lista";
+    } else if (state.screen === "search") {
       hint.innerHTML = "A busca fica nesta aba · OK no campo abre o teclado · Resultados não mudam de aba";
     } else if (state.catalog) {
       hint.innerHTML = "Voltar volta às abas · Setas nos cartazes · OK abre";
@@ -1392,7 +1546,7 @@
       }
       paint();
     }
-    if (state.screen === "search" && !state.items.length && state.column !== "2") {
+    if (state.screen === "search" && !state.items.length && !state.picker && state.column !== "2") {
       setTimeout(focusSearchField, 60);
     }
   }
@@ -1424,6 +1578,12 @@
 
   function resumePoster(index, item, row, slot) {
     var label = item.title || "Sem título";
+    if (item.seriesTitle) {
+      label = item.seriesTitle + " · T" + (item.seasonNumber || "?") + " E" + (item.episodeNumber || "?");
+      if (item.finished) {
+        label = item.seriesTitle + " · próximo episódio";
+      }
+    }
     var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
     var width = 8;
     if (item.logo) {
@@ -1472,6 +1632,83 @@
     return number;
   }
 
+  function seasonsFromItems(items) {
+    var seen = {};
+    var list = [];
+    var i;
+    for (i = 0; i < items.length; i++) {
+      var season = String(episodeNumber(items[i].season_number) || 0);
+      if (season === "0") {
+        continue;
+      }
+      if (!seen[season]) {
+        seen[season] = { season: season, episode_count: 0 };
+        list.push(seen[season]);
+      }
+      seen[season].episode_count += 1;
+    }
+    list.sort(function (a, b) {
+      return episodeNumber(a.season) - episodeNumber(b.season);
+    });
+    return list;
+  }
+
+  function nextEpisode(entries, seasonNumber, episodeNumberValue) {
+    var season = episodeNumber(seasonNumber);
+    var episode = episodeNumber(episodeNumberValue);
+    var i;
+    for (i = 0; i < entries.length; i++) {
+      var itemSeason = episodeNumber(entries[i].season_number);
+      var itemEpisode = episodeNumber(entries[i].episode_number);
+      if (itemSeason > season || (itemSeason === season && itemEpisode > episode)) {
+        return entries[i];
+      }
+    }
+    return null;
+  }
+
+  function playNextEpisode(saved) {
+    state.seriesKey = saved.seriesKey || "";
+    state.seriesTitle = saved.seriesTitle || saved.title || "Série";
+    state.kind = "series";
+    if (saved.catalogId) {
+      state.catalog = streamerById(saved.catalogId) || state.catalog;
+    }
+    state.season = "";
+    state.message = "Abrindo o próximo episódio...";
+    render();
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "series",
+        group: "",
+        query: "",
+        series_key: state.seriesKey,
+        season: "",
+        offset: 0,
+        limit: 500,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      if (error || !payload) {
+        state.message = error ? error.message : "Não foi possível abrir a série.";
+        render();
+        return;
+      }
+      var batch = uniqueEpisodes(payload.entries || []);
+      var next = nextEpisode(batch, saved.seasonNumber, saved.episodeNumber);
+      if (!next) {
+        state.seasons = seasonsFromItems(batch);
+        state.items = [];
+        state.season = "";
+        state.message = "Você chegou ao fim da série.";
+        render();
+        return;
+      }
+      play(next);
+    });
+  }
+
   function episodeIdentity(entry) {
     var episode = episodeNumber(entry.episode_number);
     var season = episodeNumber(entry.season_number);
@@ -1479,6 +1716,118 @@
       return "titulo:" + String(entry.title || entry.url || "");
     }
     return season + ":" + episode;
+  }
+
+  function variantKind(entry) {
+    var text = foldTitle((entry.title || "") + " " + (entry.group || ""));
+    if (text.indexOf("[l]") !== -1 || text.indexOf("(l)") !== -1 || /\blegendado\b/.test(text) || /\bleg\b/.test(text)) {
+      return "leg";
+    }
+    if (text.indexOf("[d]") !== -1 || text.indexOf("(d)") !== -1 || /\bdublado\b/.test(text) || /\bdublagem\b/.test(text) || /\bdub\b/.test(text) || /\bdual\b/.test(text)) {
+      return "dub";
+    }
+    return "";
+  }
+
+  function variantScore(entry) {
+    var kind = variantKind(entry);
+    var audio = 10;
+    if (kind === "dub") {
+      audio = 40;
+    }
+    if (kind === "leg") {
+      audio = 0;
+    }
+    return audio * 100 + episodeScore(entry);
+  }
+
+  function variantLabel(entry) {
+    var kind = variantKind(entry);
+    var name = "Versão";
+    if (kind === "dub") {
+      name = "Dublado";
+    }
+    if (kind === "leg") {
+      name = "Legendado";
+    }
+    if (entry.group) {
+      return name + " · " + entry.group;
+    }
+    return name;
+  }
+
+  function mergeVariant(chosen, entry) {
+    var list = chosen.variants && chosen.variants.length ? chosen.variants : [chosen];
+    var i;
+    var found = false;
+    for (i = 0; i < list.length; i++) {
+      if (list[i].url === entry.url) {
+        found = true;
+      }
+    }
+    if (!found) {
+      list.push(entry);
+    }
+    var best = list[0];
+    for (i = 1; i < list.length; i++) {
+      if (variantScore(list[i]) > variantScore(best)) {
+        best = list[i];
+      }
+    }
+    best.variants = list;
+    return best;
+  }
+
+  function openVariantPicker(entry) {
+    var list = [];
+    var source = entry.variants && entry.variants.length ? entry.variants : [entry];
+    var i;
+    for (i = 0; i < source.length; i++) {
+      list.push(source[i]);
+    }
+    list.sort(function (a, b) {
+      return variantScore(b) - variantScore(a);
+    });
+    state.picker = list;
+    if (entry.season_number || entry.episode_number) {
+      state.pickerTitle = (state.seriesTitle || entry.series_title || entry.title || "Episódio") + " · T" + (entry.season_number || "?") + " E" + (entry.episode_number || "?");
+    } else {
+      state.pickerTitle = movieDisplayTitle(entry);
+    }
+    state.column = "1";
+    state.itemIndex = 0;
+    render();
+  }
+
+  function renderPicker() {
+    var html = '<div class="modes">' + modeButtons() + "</div>";
+    html += '<h1 class="shelf-title">Escolha a versão</h1>';
+    html += '<p class="status">' + esc(state.pickerTitle) + "</p>";
+    html += '<div id="list">';
+    var i;
+    for (i = 0; i < state.picker.length; i++) {
+      html += '<button type="button" class="row focusable" data-col="1" data-action="pick-variant" data-index="' + i + '" data-row="' + i + '" data-slot="0"><i>' + (i + 1) + "</i><span>" + esc(variantLabel(state.picker[i])) + "</span></button>";
+    }
+    html += "</div>";
+    stage.innerHTML = html;
+  }
+
+  function playVariant(entry) {
+    state.picker = null;
+    play({
+      url: entry.url,
+      title: entry.title,
+      logo: entry.logo || "",
+      group: entry.group || "",
+      category: entry.category || "",
+      media_kind: entry.media_kind || "",
+      kind: entry.kind || "",
+      series_key: entry.series_key || state.seriesKey || "",
+      series_title: entry.series_title || state.seriesTitle || "",
+      season_number: entry.season_number || "",
+      episode_number: entry.episode_number || "",
+      catalogId: entry.catalogId || ""
+    });
   }
 
   function episodeScore(entry) {
@@ -1543,10 +1892,11 @@
       var entry = entries[i];
       var key = movieTitleKey(entry);
       if (!chosen[key]) {
+        entry.variants = [entry];
         chosen[key] = entry;
         order.push(key);
-      } else if (episodeScore(entry) > episodeScore(chosen[key])) {
-        chosen[key] = entry;
+      } else {
+        chosen[key] = mergeVariant(chosen[key], entry);
       }
     }
     var list = [];
@@ -1564,10 +1914,11 @@
       var entry = entries[i];
       var key = episodeIdentity(entry);
       if (!chosen[key]) {
+        entry.variants = [entry];
         chosen[key] = entry;
         order.push(key);
-      } else if (episodeScore(entry) > episodeScore(chosen[key])) {
-        chosen[key] = entry;
+      } else {
+        chosen[key] = mergeVariant(chosen[key], entry);
       }
     }
     var list = [];
@@ -1747,6 +2098,68 @@
     return shelves;
   }
 
+  function allItemIndexes() {
+    var indexes = [];
+    var i;
+    for (i = 0; i < state.items.length; i++) {
+      indexes.push(i);
+    }
+    return indexes;
+  }
+
+  function seriesEpisodeShelves() {
+    var indexes = [];
+    var i;
+    for (i = 0; i < state.items.length; i++) {
+      if (state.season && String(episodeNumber(state.items[i].season_number)) !== String(episodeNumber(state.season))) {
+        continue;
+      }
+      indexes.push(i);
+    }
+    var title = "Episódios";
+    if (state.season && episodeNumber(state.season)) {
+      title = "Temporada " + episodeNumber(state.season);
+    }
+    return [{ title: title, indexes: indexes }];
+  }
+
+  function seriesProgressLabel() {
+    var items = readContinue();
+    var i;
+    for (i = 0; i < items.length; i++) {
+      if (items[i].seriesKey && items[i].seriesKey === state.seriesKey) {
+        if (items[i].finished) {
+          return "Último episódio concluído. Abra o próximo pela fileira Continuar assistindo.";
+        }
+        return "Parou em T" + (items[i].seasonNumber || "?") + " E" + (items[i].episodeNumber || "?");
+      }
+    }
+    if (state.season) {
+      return "Temporada " + episodeNumber(state.season);
+    }
+    if (state.seasons.length) {
+      return state.seasons.length + " temporadas";
+    }
+    return "Escolha a temporada";
+  }
+
+  function seasonCard(season, row, slot) {
+    var number = season.season || "?";
+    var total = season.episode_count || 0;
+    var watched = seasonWatchedCount(state.seriesKey, number);
+    var detail = total ? watched + " de " + total + " assistidos" : "Temporada";
+    return '<button type="button" class="poster focusable" data-col="1" data-action="pick-season" data-season="' + esc(number) + '" data-row="' + row + '" data-slot="' + slot + '"><b>' + esc(String(number)) + '</b><span>Temporada ' + esc(String(number)) + " · " + esc(detail) + "</span></button>";
+  }
+
+  function seasonRowHtml(rowNum) {
+    var html = '<h2 class="row-label">Temporadas</h2>';
+    var i;
+    for (i = 0; i < state.seasons.length; i++) {
+      html += seasonCard(state.seasons[i], rowNum, i);
+    }
+    return html;
+  }
+
   function renderMovieShelves() {
     var html = '<div class="modes">' + modeButtons() + "</div>";
     html += '<h1 class="shelf-title">Filmes</h1>';
@@ -1779,6 +2192,9 @@
     html += '<p class="status">' + esc(state.message) + "</p>";
     if (state.seriesTitle) {
       html += '<h1 class="shelf-title">' + esc(state.seriesTitle) + "</h1>";
+      if (state.seriesKey) {
+        html += '<p class="status">' + esc(seriesProgressLabel()) + "</p>";
+      }
     }
     html += '<div id="list" class="poster-grid">';
     var resume = state.query || state.seriesKey ? [] : visibleContinue();
@@ -1787,12 +2203,11 @@
       html += continueCards(rowNum);
       rowNum += 1;
     }
-    var episodeIndexes = [];
-    var episode;
-    for (episode = 0; episode < state.items.length; episode++) {
-      episodeIndexes.push(episode);
+    var shelves = state.seriesKey ? seriesEpisodeShelves() : (state.query ? [{ title: "Resultados", indexes: allItemIndexes() }] : buildShelves(state.items));
+    if (state.seriesKey && !state.season && state.seasons.length > 1) {
+      html += seasonRowHtml(rowNum);
+      shelves = [];
     }
-    var shelves = state.seriesKey ? [{ title: "Episódios", indexes: episodeIndexes }] : (state.query ? [{ title: "Resultados", indexes: episodeIndexes }] : buildShelves(state.items));
     var s;
     var n;
     for (s = 0; s < shelves.length; s++) {
@@ -1815,16 +2230,33 @@
 
   function posterButton(index, entry, row, slot) {
     var label = entry.title || entry.series_title || "Sem título";
+    var watch = null;
+    var bar = "";
     if (entry.season_number || entry.episode_number) {
       label = "T" + (entry.season_number || "?") + " E" + (entry.episode_number || "?");
+      watch = episodeWatch(state.seriesKey, entry);
     } else if (entryKind(entry) === "movies") {
       label = movieDisplayTitle(entry);
+    }
+    if (watch && watch.finished) {
+      label = "✓ " + label;
+    }
+    if (watch && !watch.finished && watch.duration) {
+      var width = Math.floor((watch.position / watch.duration) * 100);
+      if (width < 8) {
+        width = 8;
+      }
+      if (width > 100) {
+        width = 100;
+      }
+      bar = '<i class="progress" style="width:' + width + '%"></i>';
     }
     var art = "<b>" + esc((label || "?").charAt(0)) + "</b>";
     if (entry.logo) {
       art = '<img src="' + esc(entry.logo) + '" alt="" onerror="this.style.visibility=\'hidden\'">';
     }
-    return '<button type="button" class="poster focusable" data-col="1" data-action="play" data-index="' + index + '" data-row="' + row + '" data-slot="' + slot + '">' + art + "<span>" + esc(label) + "</span></button>";
+    var done = watch && watch.finished ? " done" : "";
+    return '<button type="button" class="poster focusable' + done + '" data-col="1" data-action="play" data-index="' + index + '" data-row="' + row + '" data-slot="' + slot + '">' + art + bar + "<span>" + esc(label) + "</span></button>";
   }
 
   function renderBrowse() {
@@ -1899,17 +2331,21 @@
     html += '<p class="status">' + esc(state.message) + "</p>";
     html += '<input id="title-search" class="focusable" data-col="1" data-row="0" data-slot="0" data-action="query-field" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="Digite o título" value="' + esc(state.draftQuery || state.query) + '">';
     html += '<div>' + searchAction("Limpar", "query-clear", 1) + searchAction("Buscar", "query-go", 2) + "</div>";
-    html += '<div id="list" class="poster-grid">';
-    var indexes = [];
-    var i;
-    for (i = 0; i < state.items.length; i++) {
-      indexes.push(i);
+    if (state.seriesTitle) {
+      html += '<h1 class="shelf-title">' + esc(state.seriesTitle) + "</h1>";
+      html += '<p class="status">' + esc(seriesProgressLabel()) + "</p>";
     }
-    var shelves = state.seriesKey ? [{ title: "Episódios", indexes: indexes }] : [{ title: "Resultados", indexes: indexes }];
-    if (state.items.length) {
+    html += '<div id="list" class="poster-grid">';
+    var shelves = state.seriesKey ? seriesEpisodeShelves() : [{ title: "Resultados", indexes: allItemIndexes() }];
+    var showSeasons = state.seriesKey && !state.season && state.seasons.length > 1;
+    if (state.items.length || showSeasons) {
       var rowNum = 1;
       var s;
       var n;
+      if (showSeasons) {
+        html += seasonRowHtml(rowNum);
+        shelves = [];
+      }
       for (s = 0; s < shelves.length; s++) {
         html += '<h2 class="row-label">' + esc(shelves[s].title) + "</h2>";
         for (n = 0; n < shelves[s].indexes.length; n++) {
@@ -2054,6 +2490,15 @@
         if (saved.catalogId) {
           state.catalog = streamerById(saved.catalogId) || state.catalog;
         }
+        if (saved.finished && saved.seriesKey) {
+          playNextEpisode(saved);
+          return;
+        }
+        if (saved.seriesKey) {
+          state.seriesKey = saved.seriesKey;
+          state.seriesTitle = saved.seriesTitle || saved.title || "";
+          state.kind = "series";
+        }
         play({
           url: saved.url,
           title: saved.title,
@@ -2062,7 +2507,11 @@
           category: saved.category || saved.kind,
           media_kind: saved.mediaKind || "",
           kind: saved.kind,
-          catalogId: saved.catalogId || ""
+          catalogId: saved.catalogId || "",
+          series_key: saved.seriesKey || "",
+          series_title: saved.seriesTitle || "",
+          season_number: saved.seasonNumber || "",
+          episode_number: saved.episodeNumber || ""
         });
       }
       return;
@@ -2082,6 +2531,28 @@
     }
     if (action === "more") {
       loadItems(true);
+      return;
+    }
+    if (action === "pick-season") {
+      state.season = target.getAttribute("data-season") || "";
+      state.itemIndex = 0;
+      state.column = "1";
+      state.offset = 0;
+      var ready = seriesEpisodeShelves();
+      if (ready[0] && ready[0].indexes.length) {
+        state.message = "Temporada " + state.season;
+        render();
+        return;
+      }
+      state.items = [];
+      loadItems(false);
+      return;
+    }
+    if (action === "pick-variant") {
+      var variant = state.picker[Number(target.getAttribute("data-index"))] || null;
+      if (variant) {
+        playVariant(variant);
+      }
       return;
     }
     if (action === "play") {

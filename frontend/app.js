@@ -3436,6 +3436,21 @@ function renderSeriesEpisodes() {
   });
 }
 
+function variantAudioRank(entry) {
+  const text = `${entry?.title || ""} ${entry?.group || ""}`;
+  if (/\[l\]|\(l\)/i.test(text) || /\b(legendado|leg)\b/i.test(text)) {
+    return 0;
+  }
+  if (/\[d\]|\(d\)/i.test(text) || /\b(dublado|dublagem|dub|dual)\b/i.test(text)) {
+    return 2;
+  }
+  return 1;
+}
+
+function sortPlaybackVariants(variants) {
+  return [...(variants || [])].sort((a, b) => variantAudioRank(b) - variantAudioRank(a));
+}
+
 function groupedSeriesEpisodes(entries) {
   const groups = new Map();
   entries.forEach((entry, index) => {
@@ -3452,16 +3467,19 @@ function groupedSeriesEpisodes(entries) {
     }
     groups.get(key).variants.push(entry);
   });
-  return Array.from(groups.values()).sort((a, b) => Number(a.episode) - Number(b.episode));
+  return Array.from(groups.values())
+    .map((episode) => ({ ...episode, variants: sortPlaybackVariants(episode.variants) }))
+    .sort((a, b) => Number(a.episode) - Number(b.episode));
 }
 
 function seriesVariantLabel(entry, index) {
   const pieces = [];
-  const text = `${entry.title || ""} ${entry.group || ""}`.toLowerCase();
-  if (/dub|dublado|dual/.test(text)) {
+  const raw = `${entry.title || ""} ${entry.group || ""}`;
+  const text = raw.toLowerCase();
+  if (/\[d\]|\(d\)/i.test(raw) || /dub|dublado|dual/.test(text)) {
     pieces.push("Dublado");
   }
-  if (/leg|legendado/.test(text)) {
+  if (/\[l\]|\(l\)/i.test(raw) || /leg|legendado/.test(text)) {
     pieces.push("Legendado");
   }
   if (entry.group) {
@@ -3530,7 +3548,8 @@ function pickSameVariant(episodeGroup, preferredEntry = null) {
     return null;
   }
   if (!preferredEntry) {
-    return variants.find(isEntryPlayable) || variants[0];
+    const ranked = sortPlaybackVariants(variants);
+    return ranked.find(isEntryPlayable) || ranked[0];
   }
   const exact = variants.find((variant) => variant.url === preferredEntry.url);
   if (exact && isEntryPlayable(exact)) {
@@ -3549,7 +3568,8 @@ function pickSameVariant(episodeGroup, preferredEntry = null) {
   if (sameGroup) {
     return sameGroup;
   }
-  return variants.find(isEntryPlayable) || variants[0];
+  const ranked = sortPlaybackVariants(variants);
+  return ranked.find(isEntryPlayable) || ranked[0];
 }
 
 function getOrderedEpisodesForCurrentSeason() {

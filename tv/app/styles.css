@@ -441,6 +441,10 @@ body.themed #app {
   background: #e50914;
 }
 
+.poster.done {
+  border: 3px solid #46d369;
+}
+
 .poster.more span {
   height: 360px;
   line-height: 360px;
