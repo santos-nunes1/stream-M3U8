@@ -23,6 +23,11 @@
   var selectedEl = null;
   var loadToken = 0;
   var logoFetches = {};
+  var historyMemory = null;
+  var historyRoot = null;
+  var historyFileTimer = 0;
+  var historyWriting = false;
+  var historyDirty = false;
   var failing = false;
   var scrollTops = { groups: 0, list: 0 };
   var MODES = [
@@ -910,21 +915,328 @@
     });
   }
 
-  function readContinue() {
+  function emptyHistory() {
+    return { continueItems: [], seriesBook: {} };
+  }
+
+  function loadHistoryMemory() {
+    if (historyMemory) {
+      return historyMemory;
+    }
+    historyMemory = emptyHistory();
     try {
       var raw = localStorage.getItem("streamcorsario.continue");
       var parsed = raw ? JSON.parse(raw) : [];
       if (parsed && parsed.length) {
-        return parsed;
+        historyMemory.continueItems = parsed;
       }
     } catch (ignore) {}
-    return [];
+    try {
+      var rawBook = localStorage.getItem("streamcorsario.seriesProgress");
+      var parsedBook = rawBook ? JSON.parse(rawBook) : {};
+      if (parsedBook) {
+        historyMemory.seriesBook = parsedBook;
+      }
+    } catch (ignore) {}
+    return historyMemory;
+  }
+
+  function mirrorHistoryLocal() {
+    var memory = loadHistoryMemory();
+    try {
+      localStorage.setItem("streamcorsario.continue", JSON.stringify(memory.continueItems || []));
+    } catch (ignore) {}
+    try {
+      localStorage.setItem("streamcorsario.seriesProgress", JSON.stringify(memory.seriesBook || {}));
+    } catch (ignore) {}
+  }
+
+  function continueIdentity(item) {
+    if (item.seriesKey) {
+      return "s:" + item.seriesKey;
+    }
+    return "u:" + (item.url || "");
+  }
+
+  function preferContinue(current, incoming) {
+    if (!current) {
+      return incoming;
+    }
+    if (!incoming) {
+      return current;
+    }
+    if (incoming.finished && !current.finished) {
+      return incoming;
+    }
+    if (current.finished && !incoming.finished) {
+      return current;
+    }
+    if ((incoming.position || 0) > (current.position || 0)) {
+      return incoming;
+    }
+    if (!current.logo && incoming.logo) {
+      return incoming;
+    }
+    return current;
+  }
+
+  function mergeContinueLists(localItems, fileItems) {
+    var map = {};
+    var order = [];
+    var i;
+    function take(item) {
+      if (!item || (!item.url && !item.seriesKey)) {
+        return;
+      }
+      var key = continueIdentity(item);
+      if (!map[key]) {
+        order.push(key);
+        map[key] = item;
+        return;
+      }
+      map[key] = preferContinue(map[key], item);
+    }
+    for (i = 0; i < localItems.length; i++) {
+      take(localItems[i]);
+    }
+    for (i = 0; i < fileItems.length; i++) {
+      take(fileItems[i]);
+    }
+    var list = [];
+    for (i = 0; i < order.length; i++) {
+      if (list.length < 24) {
+        list.push(map[order[i]]);
+      }
+    }
+    return list;
+  }
+
+  function preferEpisode(current, incoming) {
+    if (!current) {
+      return incoming;
+    }
+    if (!incoming) {
+      return current;
+    }
+    if (incoming.finished && !current.finished) {
+      return incoming;
+    }
+    if (current.finished && !incoming.finished) {
+      return current;
+    }
+    if ((incoming.position || 0) >= (current.position || 0)) {
+      return incoming;
+    }
+    return current;
+  }
+
+  function mergeEpisodeLists(localList, fileList) {
+    var map = {};
+    var order = [];
+    var i;
+    function take(item) {
+      if (!item || !item.id) {
+        return;
+      }
+      if (!map[item.id]) {
+        order.push(item.id);
+        map[item.id] = item;
+        return;
+      }
+      map[item.id] = preferEpisode(map[item.id], item);
+    }
+    var local = localList || [];
+    var file = fileList || [];
+    for (i = 0; i < local.length; i++) {
+      take(local[i]);
+    }
+    for (i = 0; i < file.length; i++) {
+      take(file[i]);
+    }
+    var list = [];
+    for (i = 0; i < order.length; i++) {
+      if (list.length < 400) {
+        list.push(map[order[i]]);
+      }
+    }
+    return list;
+  }
+
+  function mergeSeriesBooks(localBook, fileBook) {
+    var result = {};
+    var seen = {};
+    var key;
+    var local = localBook || {};
+    var file = fileBook || {};
+    for (key in local) {
+      if (local.hasOwnProperty(key)) {
+        seen[key] = 1;
+      }
+    }
+    for (key in file) {
+      if (file.hasOwnProperty(key)) {
+        seen[key] = 1;
+      }
+    }
+    for (key in seen) {
+      if (seen.hasOwnProperty(key)) {
+        result[key] = mergeEpisodeLists(local[key], file[key]);
+      }
+    }
+    return result;
+  }
+
+  function scheduleHistoryFile() {
+    historyDirty = true;
+    clearTimeout(historyFileTimer);
+    historyFileTimer = setTimeout(flushHistoryFile, 700);
+  }
+
+  function flushHistoryFile() {
+    clearTimeout(historyFileTimer);
+    if (!historyRoot) {
+      return;
+    }
+    if (!historyDirty) {
+      return;
+    }
+    if (historyWriting) {
+      return;
+    }
+    historyDirty = false;
+    historyWriting = true;
+    var payload = JSON.stringify({
+      continue: loadHistoryMemory().continueItems || [],
+      seriesProgress: loadHistoryMemory().seriesBook || {}
+    });
+    var file = null;
+    try {
+      file = historyRoot.resolve("streamcorsario-history.json");
+    } catch (ignore) {
+      try {
+        file = historyRoot.createFile("streamcorsario-history.json");
+      } catch (ignoreCreate) {
+        historyWriting = false;
+        historyDirty = true;
+        return;
+      }
+    }
+    file.openStream("w", function (stream) {
+      try {
+        stream.write(payload);
+      } catch (ignore) {}
+      try {
+        stream.close();
+      } catch (ignore) {}
+      historyWriting = false;
+      if (historyDirty) {
+        flushHistoryFile();
+      }
+    }, function () {
+      historyWriting = false;
+      historyDirty = true;
+    }, "UTF-8");
+  }
+
+  function readHistoryFile(dir, done) {
+    var file = null;
+    try {
+      file = dir.resolve("streamcorsario-history.json");
+    } catch (ignore) {
+      done(null);
+      return;
+    }
+    if (!file.fileSize) {
+      done(null);
+      return;
+    }
+    file.openStream("r", function (stream) {
+      var text = "";
+      try {
+        text = stream.read(file.fileSize);
+      } catch (ignore) {}
+      try {
+        stream.close();
+      } catch (ignore) {}
+      var parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch (ignore) {}
+      done(parsed);
+    }, function () {
+      done(null);
+    }, "UTF-8");
+  }
+
+  function applyStoredHistory(fileData) {
+    var memory = loadHistoryMemory();
+    var fileContinue = [];
+    var fileBook = {};
+    if (fileData && fileData["continue"] && fileData["continue"].length) {
+      fileContinue = fileData["continue"];
+    }
+    if (fileData && fileData.seriesProgress) {
+      fileBook = fileData.seriesProgress;
+    }
+    memory.continueItems = mergeContinueLists(memory.continueItems || [], fileContinue);
+    memory.seriesBook = mergeSeriesBooks(memory.seriesBook || {}, fileBook);
+    mirrorHistoryLocal();
+    historyDirty = true;
+    flushHistoryFile();
+    if (state.kind === "continue" && !(state.picker && state.picker.length) && document.body.className.indexOf("playing") === -1) {
+      render();
+    }
+  }
+
+  function restoreHistoryFile() {
+    if (!window.tizen || !window.tizen.filesystem || !window.tizen.filesystem.resolve) {
+      return;
+    }
+    var roots = ["documents", "downloads", "wgt-private"];
+    function tryRoot(index) {
+      if (index >= roots.length) {
+        return;
+      }
+      window.tizen.filesystem.resolve(roots[index], function (dir) {
+        historyRoot = dir;
+        readHistoryFile(dir, function (data) {
+          if (data) {
+            applyStoredHistory(data);
+            return;
+          }
+          if ((loadHistoryMemory().continueItems || []).length || hasSeriesBook(loadHistoryMemory().seriesBook)) {
+            historyDirty = true;
+            flushHistoryFile();
+          }
+        });
+      }, function () {
+        tryRoot(index + 1);
+      }, "rw");
+    }
+    tryRoot(0);
+  }
+
+  function hasSeriesBook(book) {
+    var key;
+    if (!book) {
+      return false;
+    }
+    for (key in book) {
+      if (book.hasOwnProperty(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function readContinue() {
+    return loadHistoryMemory().continueItems || [];
   }
 
   function writeContinue(items) {
-    try {
-      localStorage.setItem("streamcorsario.continue", JSON.stringify(items));
-    } catch (ignore) {}
+    loadHistoryMemory().continueItems = items;
+    mirrorHistoryLocal();
+    scheduleHistoryFile();
   }
 
   function matchesContinueView(item) {
@@ -968,20 +1280,13 @@
   }
 
   function readSeriesProgress() {
-    try {
-      var raw = localStorage.getItem("streamcorsario.seriesProgress");
-      var parsed = raw ? JSON.parse(raw) : {};
-      if (parsed) {
-        return parsed;
-      }
-    } catch (ignore) {}
-    return {};
+    return loadHistoryMemory().seriesBook || {};
   }
 
   function writeSeriesProgress(book) {
-    try {
-      localStorage.setItem("streamcorsario.seriesProgress", JSON.stringify(book));
-    } catch (ignore) {}
+    loadHistoryMemory().seriesBook = book;
+    mirrorHistoryLocal();
+    scheduleHistoryFile();
   }
 
   function episodeWatch(seriesKey, entry) {
@@ -1554,6 +1859,7 @@
 
   function stopPlayback() {
     saveWatching();
+    flushHistoryFile();
     nextToken += 1;
     state.queuedNext = null;
     state.nextReady = false;
@@ -1750,10 +2056,10 @@
     }
     html += '<h2 class="row-label">' + esc(title) + "</h2>";
     for (i = 0; i < indexes.length; i++) {
+      html += '<div class="continue-card">';
       html += resumePoster(indexes[i], items[indexes[i]], row, i);
-    }
-    for (i = 0; i < indexes.length; i++) {
       html += '<button type="button" class="remove-link focusable" data-col="1" data-action="remove-continue" data-resume="' + indexes[i] + '" data-row="' + (row + 1) + '" data-slot="' + i + '">Remover</button>';
+      html += "</div>";
     }
     return html;
   }
@@ -3250,5 +3556,6 @@
   } catch (ignore) {}
 
   document.body.focus();
+  restoreHistoryFile();
   loadItems(false);
 })();
