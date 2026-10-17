@@ -3165,15 +3165,6 @@
     return '<button type="button" class="episode-row focusable' + done + '" data-col="1" data-action="play" data-index="' + index + '" data-row="' + row + '" data-slot="' + slot + '"><b>' + esc(mark + code) + "</b><span>" + esc(name) + "</span>" + bar + "</button>";
   }
 
-  function seasonCard(season, row, slot) {
-    var number = season.season || "?";
-    var total = season.episode_count || 0;
-    var watched = seasonWatchedCount(state.seriesKey, number);
-    var detail = total ? watched + " de " + total + " assistidos" : "Temporada";
-    var selected = String(episodeNumber(number)) === String(episodeNumber(state.season)) ? " current" : "";
-    return '<button type="button" class="poster focusable' + selected + '" data-col="1" data-action="pick-season" data-season="' + esc(number) + '" data-row="' + row + '" data-slot="' + slot + '"><b>' + esc(String(number)) + '</b><span>Temporada ' + esc(String(number)) + " · " + esc(detail) + "</span></button>";
-  }
-
   function seriesBoardHtml(rowNum) {
     var html = '<div id="list" class="poster-grid series-board">';
     var episodeRowNum = rowNum;
@@ -3200,15 +3191,6 @@
       episodeRowNum += 1;
     }
     html += "</div>";
-    return html;
-  }
-
-  function seasonRowHtml(rowNum) {
-    var html = '<h2 class="row-label">Temporadas</h2>';
-    var i;
-    for (i = 0; i < state.seasons.length; i++) {
-      html += seasonCard(state.seasons[i], rowNum, i);
-    }
     return html;
   }
 
