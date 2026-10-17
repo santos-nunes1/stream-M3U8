@@ -77,9 +77,7 @@ button:focus { outline: none; }
 }
 
 .hint {
-  margin: 6px 0 0 84px;
-  color: #67e8f9;
-  font-size: 20px;
+  display: none;
 }
 
 .modes { height: 64px; }
@@ -515,6 +513,90 @@ body.themed #app {
 .remove-link[data-selected="1"] {
   border-color: #fff;
   background: #3a1212;
+}
+
+.card-action {
+  display: block;
+  width: 250px;
+  box-sizing: border-box;
+  margin: 12px 0 0;
+  padding: 16px 0;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 22px;
+  text-align: center;
+}
+
+.card-action[data-selected="1"] {
+  border-color: #fff;
+  background: #202020;
+}
+
+.season-chip {
+  display: inline-block;
+  margin: 0 12px 16px 0;
+  padding: 16px 22px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: #fff;
+  font-size: 24px;
+  vertical-align: top;
+}
+
+.season-chip.current {
+  background: #fff;
+  color: #111;
+}
+
+.season-chip[data-selected="1"] {
+  outline: 4px solid #e50914;
+}
+
+.episode-row {
+  display: block;
+  width: 1480px;
+  margin: 0 0 12px;
+  padding: 18px 22px;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: #1a1a1a;
+  color: #fff;
+  text-align: left;
+  font-size: 26px;
+}
+
+.episode-row b {
+  display: inline-block;
+  width: 120px;
+  color: #bdbdbd;
+  font-size: 24px;
+  vertical-align: top;
+}
+
+.episode-row span {
+  display: inline-block;
+  width: 1280px;
+  overflow: hidden;
+  vertical-align: top;
+}
+
+.episode-row .progress {
+  position: static;
+  display: block;
+  height: 4px;
+  margin-top: 12px;
+}
+
+.episode-row.done {
+  border-color: #46d369;
+}
+
+.episode-row[data-selected="1"] {
+  border-color: #fff;
+  background: #2a2a2a;
 }
 
 .poster.more span {
