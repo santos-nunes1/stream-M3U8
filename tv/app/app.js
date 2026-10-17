@@ -2359,6 +2359,81 @@
     return null;
   }
 
+  function previousEpisode(entries, seasonNumber, episodeNumberValue) {
+    var season = episodeNumber(seasonNumber);
+    var episode = episodeNumber(episodeNumberValue);
+    var found = null;
+    var i;
+    for (i = 0; i < entries.length; i++) {
+      var itemSeason = episodeNumber(entries[i].season_number);
+      var itemEpisode = episodeNumber(entries[i].episode_number);
+      if (itemSeason < season || (itemSeason === season && itemEpisode < episode)) {
+        found = entries[i];
+      }
+    }
+    return found;
+  }
+
+  function skipRelative(direction) {
+    if (state.advancing || !state.watching || state.watching.kind !== "series" || !state.watching.seriesKey) {
+      if (!state.advancing) {
+        showHud("Este título não tem outro episódio.");
+      }
+      return;
+    }
+    if (direction > 0 && state.queuedNext) {
+      var ready = state.queuedNext;
+      state.queuedNext = null;
+      state.pendingAdvance = false;
+      hideUpNext();
+      saveWatching();
+      haltPlayer();
+      play(ready);
+      return;
+    }
+    state.advancing = true;
+    hideUpNext();
+    showHud(direction > 0 ? "Próximo episódio..." : "Episódio anterior...");
+    var saved = {
+      seriesKey: state.watching.seriesKey,
+      seasonNumber: state.watching.seasonNumber,
+      episodeNumber: state.watching.episodeNumber,
+      url: state.watching.url
+    };
+    api("/api/playlist/preloaded", {
+      method: "POST",
+      body: {
+        category: "series",
+        group: "",
+        query: "",
+        series_key: saved.seriesKey,
+        season: "",
+        offset: 0,
+        limit: 500,
+        browse: "playlist"
+      }
+    }, function (error, payload) {
+      state.advancing = false;
+      if (!state.watching || state.watching.url !== saved.url) {
+        return;
+      }
+      if (error || !payload) {
+        showHud("Não foi possível trocar de episódio.");
+        return;
+      }
+      var batch = uniqueEpisodes(payload.entries || []);
+      var target = direction > 0 ? nextEpisode(batch, saved.seasonNumber, saved.episodeNumber) : previousEpisode(batch, saved.seasonNumber, saved.episodeNumber);
+      if (!target) {
+        showHud(direction > 0 ? "Este é o último episódio." : "Este é o primeiro episódio.");
+        return;
+      }
+      var chosen = pickAutoVariant(target);
+      saveWatching();
+      haltPlayer();
+      play(chosen);
+    });
+  }
+
   function hideUpNext() {
     state.upNextVisible = false;
     if (upNextBox) {
@@ -3611,7 +3686,15 @@
     }
     if (document.body.className.indexOf("playing") !== -1) {
       event.preventDefault();
-      if ((code === 13 || code === 23 || code === 29443 || code === 39) && state.upNextVisible && state.queuedNext && !state.upNextCancelled) {
+      if (code === 39 || code === 427 || code === 417) {
+        skipRelative(1);
+        return;
+      }
+      if (code === 37 || code === 428 || code === 412) {
+        skipRelative(-1);
+        return;
+      }
+      if ((code === 13 || code === 23 || code === 29443) && state.upNextVisible && state.queuedNext && !state.upNextCancelled) {
         advanceToNext();
       }
       return;
@@ -3665,7 +3748,7 @@
 
   try {
     if (window.tizen && window.tizen.tvinputdevice && window.tizen.tvinputdevice.registerKey) {
-      var remoteKeys = ["Exit", "MediaPlay", "MediaPause", "MediaPlayPause"];
+      var remoteKeys = ["Exit", "MediaPlay", "MediaPause", "MediaPlayPause", "ChannelUp", "ChannelDown", "MediaFastForward", "MediaRewind"];
       var keyIndex;
       for (keyIndex = 0; keyIndex < remoteKeys.length; keyIndex++) {
         try {
