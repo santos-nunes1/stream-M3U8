@@ -155,7 +155,14 @@
             <button id="stop-stream" class="danger" type="button" disabled>Parar</button>
           </div>
         </div>
-        <video id="video" controls playsinline preload="auto"></video>
+        <div class="player-stage">
+          <video id="video" controls playsinline preload="auto"></video>
+          <div id="playback-loading" class="playback-loading" hidden>
+            <span class="helm-icon playback-loading-helm" aria-hidden="true"></span>
+            <strong id="playback-loading-title">Carregando conteúdo</strong>
+            <p id="playback-loading-message">Preparando o vídeo...</p>
+          </div>
+        </div>
         <div id="episode-nav" class="episode-nav" hidden>
           <button id="prev-episode" class="ghost episode-nav-button" type="button" disabled>Anterior</button>
           <span id="episode-nav-label" class="episode-nav-label"></span>
@@ -212,6 +219,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.7"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
-    <script src="/app.js?v=20261105-browser-hls"></script>
+    <script src="/app.js?v=20261105-series-hls"></script>
   </body>
 </html>

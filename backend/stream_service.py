@@ -649,6 +649,15 @@ def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str)
     browser_file = path.endswith((".mp4", ".m4v", ".mov", ".webm")) or (
         "/movie/" in path and not path.endswith((".mkv", ".avi", ".ts", ".m3u8", ".m3u"))
     )
+    # Series files are usually MKV or MP4 with AC3, or an MP4 whose index sits at
+    # the end of the episode. The browser plays movies directly; an episode has to
+    # be turned into fMP4 HLS, the same idea as a live channel.
+    if "/series/" in path:
+        if video and not h264:
+            return "transcode"
+        if h264 and aac and audio:
+            return "remux"
+        return "audio"
 
     if not video:
         if browser_file:
@@ -656,7 +665,9 @@ def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str)
         return "audio"
     if h264 and aac:
         if mpegts:
-            return "remux"
+            # MPEG-TS AAC is ADTS. Copying it into fMP4 makes ffmpeg abort before a
+            # usable playlist exists, which is the live-channel failure in the browser.
+            return "audio"
         if browser_file or hls:
             return "passthrough"
         return "remux"

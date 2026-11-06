@@ -2935,6 +2935,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     auth["user"]["id"],
                     auth["session_id"],
                     force_delivery=force_delivery,
+                    media_kind=requested_kind,
                 )
                 self._send_json(200, response)
                 return
@@ -3876,6 +3877,52 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         return
 
 
+def _playlist_has_segment(playlist: Path) -> bool:
+    if not playlist.exists() or playlist.stat().st_size <= 0:
+        return False
+    try:
+        lines = playlist.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return False
+    duration = 0.0
+    segment = ""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("#EXTINF:"):
+            try:
+                duration += float(line.split(":", 1)[1].split(",", 1)[0])
+            except ValueError:
+                continue
+        elif line and not line.startswith("#"):
+            segment = line
+    if duration < 0.5 or not segment or "/" in segment or "\\" in segment or ".." in segment:
+        return False
+    target = playlist.parent / segment
+    return target.is_file() and target.stat().st_size > 1024
+
+
+def _failure_needs_transcode(message: str) -> bool:
+    lowered = message.lower()
+    return any(token in lowered for token in ("malformed", "invalid", "codec", "muxer", "unsupported", "aac"))
+
+
+def _ffmpeg_failure_hint(session_dir: Path) -> str:
+    log_path = session_dir / "ffmpeg.log"
+    if not log_path.exists():
+        return ""
+    try:
+        lines = [line.strip() for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        lowered = line.lower()
+        if "http://" in lowered or "https://" in lowered:
+            continue
+        if any(token in lowered for token in ("error", "invalid", "failed", "malformed", "timed out", "timeout")):
+            return line[:160]
+    return ""
+
+
 def _probe_browser_source(source_url: str) -> Dict[str, object]:
     if shutil.which("ffprobe") is None:
         return {"video": "", "audio": "", "duration": None}
@@ -3948,6 +3995,12 @@ def _ffmpeg_hls_command(source_url: str, session_dir: Path, playlist_path: Path,
         "1",
         "-reconnect_delay_max",
         "5",
+        "-rw_timeout",
+        "20000000",
+        "-fflags",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
         "-i",
         source_url,
         "-map",
@@ -3999,15 +4052,20 @@ def _ffmpeg_hls_command(source_url: str, session_dir: Path, playlist_path: Path,
         command.extend(["-c:v", "copy"])
     if profile == "remux":
         command.extend(["-c:a", "copy"])
+        source_path = urllib.parse.urlsplit(source_url).path.lower()
+        if source_path.endswith(".ts") or "/live/" in source_path:
+            command.extend(["-bsf:a", "aac_adtstoasc"])
     else:
         command.extend(["-c:a", "aac", "-ac", "2", "-b:a", "160k"])
 
     if vod:
-        hls_time = os.getenv("BROWSER_VOD_HLS_TIME_SECONDS", "6")
-        hls_flags = "independent_segments+temp_file"
+        hls_time = os.getenv("BROWSER_VOD_HLS_TIME_SECONDS", "2")
+        # event keeps every segment and lets the player start at the beginning
+        # while the rest of the episode is still being prepared.
+        hls_flags = "independent_segments+append_list+temp_file"
         hls_list_size = "0"
     else:
-        hls_time = os.getenv("BROWSER_HLS_TIME_SECONDS", "4")
+        hls_time = os.getenv("BROWSER_HLS_TIME_SECONDS", "2")
         hls_flags = "delete_segments+append_list+omit_endlist+independent_segments+temp_file"
         hls_list_size = os.getenv("BROWSER_HLS_LIST_SIZE", "5")
     command.extend([
@@ -4027,7 +4085,7 @@ def _ffmpeg_hls_command(source_url: str, session_dir: Path, playlist_path: Path,
         "segment_%05d.m4s",
     ])
     if vod:
-        command.extend(["-hls_playlist_type", "vod"])
+        command.extend(["-hls_playlist_type", "event"])
     command.append("playlist.m3u8")
     return command
 
@@ -4086,13 +4144,23 @@ class StreamApplicationServer(ThreadingHTTPServer):
         user_id: str = "",
         session_id: str = "",
         force_delivery: str = "",
+        media_kind: str = "",
     ) -> Dict[str, str]:
-        probed = _probe_browser_source(source_url)
-        delivery = "transcode" if force_delivery == "transcode" else choose_browser_delivery(
-            source_url,
-            str(probed.get("video") or ""),
-            str(probed.get("audio") or ""),
-        )
+        source_path = urllib.parse.urlsplit(source_url).path.lower()
+        live_ts = media_kind == "mpegts" or source_path.endswith(".ts") or "/live/" in source_path
+        probed: Dict[str, object] = {}
+        if force_delivery == "transcode":
+            delivery = "transcode"
+        elif live_ts:
+            # One connection only. A probe before ffmpeg makes IPTV panels drop the channel.
+            delivery = "audio"
+        else:
+            probed = _probe_browser_source(source_url)
+            delivery = choose_browser_delivery(
+                source_url,
+                str(probed.get("video") or ""),
+                str(probed.get("audio") or ""),
+            )
         if delivery == "passthrough":
             response = self.service.start_stream(stream_id, base_url)
             if response.get("media_kind") != "hls":
@@ -4101,16 +4169,32 @@ class StreamApplicationServer(ThreadingHTTPServer):
             response["delivery"] = "passthrough"
             return response
 
-        vod = browser_stream_is_vod(source_url, probed.get("duration") if isinstance(probed.get("duration"), float) else None)
-        response = self.start_transmux_hls(
-            stream_id,
-            source_url,
-            base_url,
-            user_id,
-            session_id,
-            profile=delivery,
-            vod=vod,
-        )
+        duration = probed.get("duration") if isinstance(probed.get("duration"), float) else None
+        vod = browser_stream_is_vod(source_url, duration)
+        try:
+            response = self.start_transmux_hls(
+                stream_id,
+                source_url,
+                base_url,
+                user_id,
+                session_id,
+                profile=delivery,
+                vod=vod,
+            )
+        except StreamConfigurationError as exc:
+            if delivery == "transcode" or not _failure_needs_transcode(str(exc)):
+                raise
+            response = self.start_transmux_hls(
+                stream_id,
+                source_url,
+                base_url,
+                user_id,
+                session_id,
+                profile="transcode",
+                vod=vod,
+            )
+            response["delivery"] = "transcode"
+            return response
         response["delivery"] = delivery
         return response
 
@@ -4178,16 +4262,21 @@ class StreamApplicationServer(ThreadingHTTPServer):
         if profile == "transcode":
             ready_timeout = float(os.getenv("BROWSER_TRANSCODE_START_TIMEOUT_SECONDS", "20"))
         elif profile in {"remux", "audio"}:
-            ready_timeout = float(os.getenv("BROWSER_REMUX_START_TIMEOUT_SECONDS", "12"))
+            ready_timeout = float(os.getenv("BROWSER_REMUX_START_TIMEOUT_SECONDS", "20"))
         ready = self.wait_for_transmux_playlist(token, ready_timeout)
         if profile != "copy" and not ready:
+            hint = _ffmpeg_failure_hint(session_dir)
             self._stop_transmux_session(token)
-            raise StreamConfigurationError("Nao foi possivel preparar o video para o navegador.")
+            message = "Nao foi possivel preparar o video para o navegador."
+            if hint:
+                message = f"{message} {hint}"
+            raise StreamConfigurationError(message)
         return {
             "local_proxy_url": f"{base_url.rstrip('/')}/transmux/{urllib.parse.quote(token, safe='')}/playlist.m3u8",
             "status": "transmuxing",
             "media_kind": "hls",
             "delivery": profile,
+            "vod": "true" if vod else "false",
         }
 
     def resolve_transmux_session(self, token: str) -> Dict[str, object]:
@@ -4213,7 +4302,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
             if not session:
                 return False
             playlist = Path(str(session.get("playlist") or ""))
-            if playlist.exists() and playlist.stat().st_size > 0:
+            if _playlist_has_segment(playlist):
                 return True
             process = session.get("process")
             if isinstance(process, subprocess.Popen) and process.poll() is not None:

@@ -32,6 +32,9 @@ const els = {
   nowPlayingTitle: document.querySelector("#now-playing-title"),
   nowPlayingMeta: document.querySelector("#now-playing-meta"),
   video: document.querySelector("#video"),
+  playbackLoading: document.querySelector("#playback-loading"),
+  playbackLoadingTitle: document.querySelector("#playback-loading-title"),
+  playbackLoadingMessage: document.querySelector("#playback-loading-message"),
   bufferHealth: document.querySelector("#buffer-health"),
   bufferHealthLabel: document.querySelector("#buffer-health-label"),
   bufferHealthDetails: document.querySelector("#buffer-health-details"),
@@ -233,6 +236,52 @@ function setStatus(message, type = "") {
   els.status.hidden = false;
   els.status.textContent = message;
   els.status.className = `status top-status ${type}`.trim();
+}
+
+let playbackWaitTimer = null;
+
+function showPlaybackLoading(message, title = "Carregando conteúdo") {
+  if (!els.playbackLoading) {
+    return;
+  }
+  clearTimeout(playbackWaitTimer);
+  els.playbackLoading.classList.remove("is-error");
+  els.playbackLoading.hidden = false;
+  if (els.playbackLoadingTitle) {
+    els.playbackLoadingTitle.textContent = title;
+  }
+  if (els.playbackLoadingMessage) {
+    els.playbackLoadingMessage.textContent = message;
+  }
+}
+
+function showPlaybackLoadingError(message) {
+  showPlaybackLoading(message, "Não foi possível reproduzir");
+  els.playbackLoading?.classList.add("is-error");
+}
+
+function hidePlaybackLoading() {
+  clearTimeout(playbackWaitTimer);
+  if (els.playbackLoading) {
+    els.playbackLoading.hidden = true;
+    els.playbackLoading.classList.remove("is-error");
+  }
+}
+
+function watchPlaybackLoading() {
+  if (!els.video || els.video.dataset.loadingWatch === "1") {
+    return;
+  }
+  els.video.dataset.loadingWatch = "1";
+  els.video.addEventListener("playing", hidePlaybackLoading);
+  els.video.addEventListener("waiting", () => {
+    clearTimeout(playbackWaitTimer);
+    playbackWaitTimer = setTimeout(() => {
+      if (els.video.readyState < 3 && !els.playbackLoading?.classList.contains("is-error")) {
+        showPlaybackLoading("Carregando o vídeo...");
+      }
+    }, 400);
+  });
 }
 
 function normalizePlaybackMode(mode) {
@@ -1104,6 +1153,7 @@ function setPlaylistLoading(message) {
 
 function showStreamError(error) {
   setStatus(error.message, "error");
+  showPlaybackLoadingError(error.message);
   finishStatusModal("Erro ao iniciar stream", error.message, "error");
 }
 
@@ -1213,6 +1263,14 @@ function inferMediaKind(streamId, entry = null) {
   return "native";
 }
 
+function isSeriesPlayback(streamId, entry = null) {
+  if (entry?.category === "series") {
+    return true;
+  }
+  const path = String(streamId || "").toLowerCase().split("?", 1)[0];
+  return path.includes("/series/");
+}
+
 function inferLivePlayback(streamId, entry = null, mediaKind = "") {
   if (mediaKind === "mpegts") {
     return true;
@@ -1265,6 +1323,9 @@ async function startStream(streamId, entry = null, options = {}) {
 
   updateNowPlaying(entry || { title: "Link direto", url: streamId });
   syncSeriesPlaybackFromEntry(entry);
+  watchPlaybackLoading();
+  showPlaybackLoading("Preparando o vídeo...");
+  scrollPlayerIntoView();
   activeStreamId = streamId;
   activeEntry = entry || { title: "Link direto", url: streamId };
   persistLastSelectedStream(activeStreamId, activeEntry);
@@ -1275,6 +1336,7 @@ async function startStream(streamId, entry = null, options = {}) {
   if (playbackMode === "direct") {
     els.proxyUrl.textContent = streamId;
     setStatus("Tentando reproduzir direto no navegador...", "ok");
+    showPlaybackLoading("Abrindo o vídeo no navegador...");
     if (!loadPlayer(streamId, mediaKind, { isLive })) {
       await stopActiveStream();
       throw new Error("Este navegador nao suporta esse formato em modo direto.");
@@ -1282,9 +1344,10 @@ async function startStream(streamId, entry = null, options = {}) {
     return;
   }
 
-  if (playbackMode === "auto" && !isLive && !options.forceDelivery) {
+  if (playbackMode === "auto" && !isLive && !isSeriesPlayback(streamId, entry) && !options.forceDelivery) {
     els.proxyUrl.textContent = streamId;
     setStatus("Tentando reproduzir direto no navegador...", "ok");
+    showPlaybackLoading("Abrindo o vídeo no navegador...");
     const directStarted = loadPlayer(streamId, mediaKind, {
       isLive,
       onFatalError: (error) => startProxyStream(streamId, entry, token, error.message),
@@ -1332,11 +1395,11 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
   }
 
   destroyPlayer();
-  setStatus(
-    reason
-      ? `Modo direto falhou (${reason}). Preparando video no navegador...`
-      : "Preparando video no navegador..."
-  );
+  const preparingMessage = reason
+    ? "O modo direto falhou. Preparando o vídeo..."
+    : "Preparando o vídeo no servidor...";
+  setStatus(preparingMessage);
+  showPlaybackLoading(preparingMessage);
   const payload = await postJson("/stream/start", {
     stream_id: streamId,
     title: entry?.title || "Link direto",
@@ -1359,9 +1422,11 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
   els.openVlc.disabled = false;
   els.proxyUrl.textContent = payload.local_proxy_url;
   const serverKind = payload.media_kind || "hls";
-  setStatus(serverKind === "hls" ? "Video pronto. Reproduzindo..." : "Reproduzindo...", "ok");
+  const livePlayback = inferLivePlayback(streamId, entry, inferMediaKind(streamId, entry));
+  setStatus(serverKind === "hls" ? "Abrindo o vídeo..." : "Reproduzindo...", "ok");
+  showPlaybackLoading(serverKind === "hls" ? "Abrindo o vídeo..." : "Reproduzindo...");
   loadPlayer(payload.local_proxy_url, serverKind, {
-    isLive: inferLivePlayback(streamId, entry, serverKind),
+    isLive: livePlayback && payload.vod !== "true" && payload.vod !== true,
     stableHls: serverKind === "hls",
     waitForInitialBuffer: false,
     onFatalError: () => {
@@ -1370,9 +1435,11 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
       }
       if (forceDelivery === "transcode" || payload.delivery === "transcode") {
         setStatus("O navegador nao conseguiu reproduzir este video.", "error");
+        showPlaybackLoadingError("O navegador não conseguiu reproduzir este vídeo.");
         return;
       }
-      setStatus("Ajustando o audio e o video para o navegador...");
+      setStatus("Ajustando o áudio e o vídeo para o navegador...");
+      showPlaybackLoading("Ajustando o áudio e o vídeo...");
       startStream(streamId, entry, { allowLiveBrowser: true, forceDelivery: "transcode" }).catch(showStreamError);
     },
   });
@@ -1627,7 +1694,15 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
 
   if (window.Hls && Hls.isSupported()) {
     const stableHls = options.stableHls === true;
-    hls = new Hls(stableHls ? {
+    const vodHls = stableHls && options.isLive === false;
+    hls = new Hls(vodHls ? {
+      lowLatencyMode: false,
+      startPosition: 0,
+      backBufferLength: 90,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      maxBufferHole: 0.5,
+    } : stableHls ? {
       lowLatencyMode: false,
       liveSyncDuration: 12,
       liveMaxLatencyDuration: 24,
@@ -1672,6 +1747,7 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
 
 async function stopActiveStream() {
   playbackSeq += 1;
+  hidePlaybackLoading();
   if (!activeStreamId) {
     destroyPlayer();
     els.openVlc.disabled = true;
