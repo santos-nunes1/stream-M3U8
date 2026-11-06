@@ -1396,8 +1396,8 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
 
   destroyPlayer();
   const preparingMessage = reason
-    ? "O modo direto falhou. Preparando o vídeo..."
-    : "Preparando o vídeo no servidor...";
+    ? (isSeriesPlayback(streamId, entry) ? "O modo direto falhou. Preparando o episódio completo..." : "O modo direto falhou. Preparando o vídeo...")
+    : (isSeriesPlayback(streamId, entry) ? "Preparando o episódio completo..." : "Preparando o vídeo no servidor...");
   setStatus(preparingMessage);
   showPlaybackLoading(preparingMessage);
   const payload = await postJson("/stream/start", {

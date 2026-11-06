@@ -3466,6 +3466,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             content_type = "video/mp2t"
         else:
             content_type = "application/octet-stream"
+        if filename.endswith((".mp4", ".m4v")):
+            self._serve_ranged_file(target, content_type, send_body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(target.stat().st_size))
@@ -3480,6 +3483,57 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     chunk = handle.read(1024 * 64)
                     if not chunk:
                         break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _serve_ranged_file(self, target: Path, content_type: str, send_body: bool) -> None:
+        size = target.stat().st_size
+        start = 0
+        end = size - 1
+        status = 200
+        range_header = self.headers.get("Range", "")
+        if range_header.startswith("bytes=") and size > 0:
+            spec = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+            left, _, right = spec.partition("-")
+            try:
+                if left == "":
+                    start = max(0, size - int(right or "0"))
+                else:
+                    start = int(left)
+                    end = int(right) if right else size - 1
+            except ValueError:
+                start, end = 0, size - 1
+            end = min(end, size - 1)
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status = 206
+        length = max(0, end - start + 1) if size else 0
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if not send_body or length <= 0:
+            return
+        try:
+            with open(target, "rb") as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = handle.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -3978,6 +4032,65 @@ def _probe_browser_source(source_url: str) -> Dict[str, object]:
     return {"video": video, "audio": audio, "duration": duration}
 
 
+def _ffmpeg_vod_mp4_command(source_url: str, profile: str) -> List[str]:
+    """One seekable MP4 for a finished episode. Video is copied when possible."""
+    user_agent = os.getenv("STREAM_USER_AGENT", "Mozilla/5.0")
+    loglevel = os.getenv("TRANSMUX_FFMPEG_LOGLEVEL", "warning")
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        loglevel,
+        "-nostdin",
+        "-user_agent",
+        user_agent,
+        "-rw_timeout",
+        "20000000",
+        "-fflags",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+        "-i",
+        source_url,
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-sn",
+        "-dn",
+    ]
+    if profile == "transcode":
+        command.extend([
+            "-c:v",
+            "libx264",
+            "-preset",
+            os.getenv("BROWSER_X264_PRESET", "veryfast"),
+            "-crf",
+            os.getenv("BROWSER_X264_CRF", "23"),
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-g",
+            "48",
+            "-keyint_min",
+            "48",
+            "-sc_threshold",
+            "0",
+        ])
+    else:
+        command.extend(["-c:v", "copy"])
+    if profile == "remux":
+        command.extend(["-c:a", "copy"])
+        source_path = urllib.parse.urlsplit(source_url).path.lower()
+        if source_path.endswith(".ts") or "/live/" in source_path:
+            command.extend(["-bsf:a", "aac_adtstoasc"])
+    else:
+        command.extend(["-c:a", "aac", "-ac", "2", "-b:a", "160k"])
+    command.extend(["-movflags", "+faststart", "-f", "mp4", "episode.mp4"])
+    return command
+
+
 def _ffmpeg_hls_command(source_url: str, session_dir: Path, playlist_path: Path, profile: str, vod: bool) -> List[str]:
     user_agent = os.getenv("STREAM_USER_AGENT", "Mozilla/5.0")
     loglevel = os.getenv("TRANSMUX_FFMPEG_LOGLEVEL", "warning")
@@ -4171,6 +4284,13 @@ class StreamApplicationServer(ThreadingHTTPServer):
 
         duration = probed.get("duration") if isinstance(probed.get("duration"), float) else None
         vod = browser_stream_is_vod(source_url, duration)
+        ready_timeout = None
+        if vod:
+            file_timeout = float(os.getenv("BROWSER_VOD_FILE_TIMEOUT_SECONDS", "3600"))
+            if isinstance(duration, float) and duration > 0:
+                ready_timeout = min(file_timeout, max(90.0, duration * 2 + 45))
+            else:
+                ready_timeout = min(file_timeout, 300.0)
         try:
             response = self.start_transmux_hls(
                 stream_id,
@@ -4180,6 +4300,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 session_id,
                 profile=delivery,
                 vod=vod,
+                ready_timeout=ready_timeout,
             )
         except StreamConfigurationError as exc:
             if delivery == "transcode" or not _failure_needs_transcode(str(exc)):
@@ -4192,6 +4313,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 session_id,
                 profile="transcode",
                 vod=vod,
+                ready_timeout=ready_timeout,
             )
             response["delivery"] = "transcode"
             return response
@@ -4207,6 +4329,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
         session_id: str = "",
         profile: str = "copy",
         vod: bool = False,
+        ready_timeout: Optional[float] = None,
     ) -> Dict[str, str]:
         if shutil.which("ffmpeg") is None:
             raise StreamConfigurationError("ffmpeg nao esta instalado no container")
@@ -4225,8 +4348,12 @@ class StreamApplicationServer(ThreadingHTTPServer):
         session_dir = root / token
         session_dir.mkdir(parents=True, exist_ok=True)
         playlist_path = session_dir / "playlist.m3u8"
+        file_output = vod and profile != "copy"
         stderr_path = session_dir / "ffmpeg.log"
-        command = _ffmpeg_hls_command(source_url, session_dir, playlist_path, profile, vod)
+        if file_output:
+            command = _ffmpeg_vod_mp4_command(source_url, profile)
+        else:
+            command = _ffmpeg_hls_command(source_url, session_dir, playlist_path, profile, vod)
         stderr_handle = open(stderr_path, "ab")
         try:
             process = subprocess.Popen(
@@ -4258,12 +4385,18 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 "profile": profile,
             }
 
-        ready_timeout = float(os.getenv("TRANSMUX_START_TIMEOUT_SECONDS", "8"))
-        if profile == "transcode":
-            ready_timeout = float(os.getenv("BROWSER_TRANSCODE_START_TIMEOUT_SECONDS", "20"))
-        elif profile in {"remux", "audio"}:
-            ready_timeout = float(os.getenv("BROWSER_REMUX_START_TIMEOUT_SECONDS", "20"))
-        ready = self.wait_for_transmux_playlist(token, ready_timeout)
+        if file_output:
+            file_timeout = ready_timeout if ready_timeout is not None else float(os.getenv("BROWSER_VOD_FILE_TIMEOUT_SECONDS", "3600"))
+            ready = self.wait_for_transmux_file(token, file_timeout)
+        else:
+            playlist_timeout = ready_timeout
+            if playlist_timeout is None:
+                playlist_timeout = float(os.getenv("TRANSMUX_START_TIMEOUT_SECONDS", "8"))
+                if profile == "transcode":
+                    playlist_timeout = float(os.getenv("BROWSER_TRANSCODE_START_TIMEOUT_SECONDS", "20"))
+                elif profile in {"remux", "audio"}:
+                    playlist_timeout = float(os.getenv("BROWSER_REMUX_START_TIMEOUT_SECONDS", "20"))
+            ready = self.wait_for_transmux_playlist(token, playlist_timeout)
         if profile != "copy" and not ready:
             hint = _ffmpeg_failure_hint(session_dir)
             self._stop_transmux_session(token)
@@ -4271,6 +4404,14 @@ class StreamApplicationServer(ThreadingHTTPServer):
             if hint:
                 message = f"{message} {hint}"
             raise StreamConfigurationError(message)
+        if file_output:
+            return {
+                "local_proxy_url": f"{base_url.rstrip('/')}/transmux/{urllib.parse.quote(token, safe='')}/episode.mp4",
+                "status": "ready",
+                "media_kind": "native",
+                "delivery": profile,
+                "vod": "true",
+            }
         return {
             "local_proxy_url": f"{base_url.rstrip('/')}/transmux/{urllib.parse.quote(token, safe='')}/playlist.m3u8",
             "status": "transmuxing",
@@ -4308,6 +4449,19 @@ class StreamApplicationServer(ThreadingHTTPServer):
             if isinstance(process, subprocess.Popen) and process.poll() is not None:
                 return False
             time.sleep(0.2)
+        return False
+
+    def wait_for_transmux_file(self, token: str, timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            session = self.resolve_transmux_session(token)
+            if not session:
+                return False
+            target = Path(str(session.get("dir") or "")) / "episode.mp4"
+            process = session.get("process")
+            if isinstance(process, subprocess.Popen) and process.poll() is not None:
+                return process.returncode == 0 and target.is_file() and target.stat().st_size > 1024
+            time.sleep(0.3)
         return False
 
     def stop_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "") -> None:

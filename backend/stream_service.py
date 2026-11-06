@@ -649,12 +649,14 @@ def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str)
     browser_file = path.endswith((".mp4", ".m4v", ".mov", ".webm")) or (
         "/movie/" in path and not path.endswith((".mkv", ".avi", ".ts", ".m3u8", ".m3u"))
     )
-    # Series files are usually MKV or MP4 with AC3, or an MP4 whose index sits at
-    # the end of the episode. The browser plays movies directly; an episode has to
-    # be turned into fMP4 HLS, the same idea as a live channel.
+    # A series file the browser can already play is served whole, like a movie.
+    # Anything else is packed into one MP4 later: the picture is copied when it
+    # is already H.264, so it does not become a live broadcast.
     if "/series/" in path:
         if video and not h264:
             return "transcode"
+        if browser_file and h264 and aac:
+            return "passthrough"
         if h264 and aac and audio:
             return "remux"
         return "audio"
