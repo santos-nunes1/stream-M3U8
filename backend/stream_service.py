@@ -627,6 +627,55 @@ def classify_playlist_category(title: str, group: str, url: str) -> str:
     return "tv"
 
 
+_BROWSER_H264 = {"h264", "avc", "avc1"}
+_BROWSER_AAC = {"aac", "mp4a"}
+
+
+def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str) -> str:
+    """How the web player should receive this source.
+
+    passthrough: the browser can open the proxied file or HLS as-is.
+    remux: copy H.264 and AAC into fMP4 HLS.
+    audio: copy H.264 and convert the audio to AAC.
+    transcode: convert video and audio so the browser can decode them.
+    """
+    video = (video_codec or "").strip().lower()
+    audio = (audio_codec or "").strip().lower()
+    path = urllib.parse.urlsplit(source_url).path.lower()
+    h264 = video in _BROWSER_H264
+    aac = audio in _BROWSER_AAC or audio == ""
+    mpegts = path.endswith(".ts") or "/live/" in path
+    hls = path.endswith((".m3u8", ".m3u"))
+    browser_file = path.endswith((".mp4", ".m4v", ".mov", ".webm")) or (
+        "/movie/" in path and not path.endswith((".mkv", ".avi", ".ts", ".m3u8", ".m3u"))
+    )
+
+    if not video:
+        if browser_file:
+            return "passthrough"
+        return "audio"
+    if h264 and aac:
+        if mpegts:
+            return "remux"
+        if browser_file or hls:
+            return "passthrough"
+        return "remux"
+    if h264:
+        return "audio"
+    return "transcode"
+
+
+def browser_stream_is_vod(source_url: str, duration_seconds: Optional[float]) -> bool:
+    path = urllib.parse.urlsplit(source_url).path.lower()
+    if "/live/" in path or path.endswith(".ts"):
+        return False
+    if path.endswith((".mp4", ".mkv", ".m4v", ".avi", ".mov", ".webm")) or "/movie/" in path or "/series/" in path:
+        return True
+    if duration_seconds is not None and duration_seconds >= 600:
+        return True
+    return False
+
+
 def classify_media_kind(url: str, fallback_type: str) -> str:
     value = url.lower()
     path = value.split("?", 1)[0]
