@@ -3955,9 +3955,38 @@ def _playlist_has_segment(playlist: Path) -> bool:
     return target.is_file() and target.stat().st_size > 1024
 
 
-def _failure_needs_transcode(message: str) -> bool:
+_PLAYBACK_CANCELLED = "Reproducao cancelada."
+
+
+def _is_input_open_failure(message: str) -> bool:
+    """The source answered, but the bytes were not a playable stream yet.
+
+    IPTV panels often do this on the first connection and serve the real
+    stream a moment later. It is not a codec problem.
+    """
     lowered = message.lower()
-    return any(token in lowered for token in ("malformed", "invalid", "codec", "muxer", "unsupported", "aac"))
+    return any(
+        token in lowered
+        for token in (
+            "error opening input",
+            "invalid data found when processing input",
+            "server returned",
+            "connection refused",
+            "connection reset",
+            "i/o error",
+            "end of file",
+        )
+    )
+
+
+def _failure_needs_transcode(message: str) -> bool:
+    if _is_input_open_failure(message):
+        return False
+    lowered = message.lower()
+    return any(
+        token in lowered
+        for token in ("malformed", "invalid argument", "codec", "muxer", "unsupported", "aac", "encoder")
+    )
 
 
 def _ffmpeg_failure_hint(session_dir: Path) -> str:
@@ -4218,6 +4247,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         self.vlc_tokens: Dict[str, Dict[str, object]] = {}
         self.transmux_lock = threading.Lock()
         self.transmux_sessions: Dict[str, Dict[str, object]] = {}
+        self.stream_generations: Dict[str, int] = {}
+        self.stream_open_locks: Dict[str, threading.Lock] = {}
         self.rate_limit_lock = threading.Lock()
         self.rate_limit_windows: Dict[Tuple[str, str], List[float]] = {}
         self.preloaded_load_lock = threading.Lock()
@@ -4259,6 +4290,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         force_delivery: str = "",
         media_kind: str = "",
     ) -> Dict[str, str]:
+        generation = self._bump_stream_generation(stream_id, user_id, session_id)
+        self._kill_transmux_stream(stream_id, user_id, session_id)
         source_path = urllib.parse.urlsplit(source_url).path.lower()
         live_ts = media_kind == "mpegts" or source_path.endswith(".ts") or "/live/" in source_path
         probed: Dict[str, object] = {}
@@ -4274,6 +4307,9 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 str(probed.get("video") or ""),
                 str(probed.get("audio") or ""),
             )
+        if self._stream_generation(stream_id, user_id, session_id) != generation:
+            raise StreamConfigurationError(_PLAYBACK_CANCELLED)
+
         if delivery == "passthrough":
             response = self.service.start_stream(stream_id, base_url)
             if response.get("media_kind") != "hls":
@@ -4291,32 +4327,49 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 ready_timeout = min(file_timeout, max(90.0, duration * 2 + 45))
             else:
                 ready_timeout = min(file_timeout, 300.0)
-        try:
-            response = self.start_transmux_hls(
-                stream_id,
-                source_url,
-                base_url,
-                user_id,
-                session_id,
-                profile=delivery,
-                vod=vod,
-                ready_timeout=ready_timeout,
-            )
-        except StreamConfigurationError as exc:
-            if delivery == "transcode" or not _failure_needs_transcode(str(exc)):
+        open_retries = max(0, int(os.getenv("BROWSER_INPUT_OPEN_RETRIES", "2")))
+        response = None
+        for attempt in range(open_retries + 1):
+            if self._stream_generation(stream_id, user_id, session_id) != generation:
+                raise StreamConfigurationError(_PLAYBACK_CANCELLED)
+            try:
+                response = self.start_transmux_hls(
+                    stream_id,
+                    source_url,
+                    base_url,
+                    user_id,
+                    session_id,
+                    profile=delivery,
+                    vod=vod,
+                    ready_timeout=ready_timeout,
+                    generation=generation,
+                )
+                break
+            except StreamConfigurationError as exc:
+                message = str(exc)
+                if message == _PLAYBACK_CANCELLED:
+                    raise
+                if _is_input_open_failure(message) and attempt < open_retries:
+                    delay = float(os.getenv("BROWSER_INPUT_OPEN_RETRY_SECONDS", "1.5")) * (attempt + 1)
+                    time.sleep(max(0.2, delay))
+                    continue
+                if delivery != "transcode" and _failure_needs_transcode(message):
+                    if self._stream_generation(stream_id, user_id, session_id) != generation:
+                        raise StreamConfigurationError(_PLAYBACK_CANCELLED)
+                    response = self.start_transmux_hls(
+                        stream_id,
+                        source_url,
+                        base_url,
+                        user_id,
+                        session_id,
+                        profile="transcode",
+                        vod=vod,
+                        ready_timeout=ready_timeout,
+                        generation=generation,
+                    )
+                    response["delivery"] = "transcode"
+                    return response
                 raise
-            response = self.start_transmux_hls(
-                stream_id,
-                source_url,
-                base_url,
-                user_id,
-                session_id,
-                profile="transcode",
-                vod=vod,
-                ready_timeout=ready_timeout,
-            )
-            response["delivery"] = "transcode"
-            return response
         response["delivery"] = delivery
         return response
 
@@ -4330,6 +4383,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
         profile: str = "copy",
         vod: bool = False,
         ready_timeout: Optional[float] = None,
+        generation: Optional[int] = None,
     ) -> Dict[str, str]:
         if shutil.which("ffmpeg") is None:
             raise StreamConfigurationError("ffmpeg nao esta instalado no container")
@@ -4337,53 +4391,65 @@ class StreamApplicationServer(ThreadingHTTPServer):
             profile = "copy"
 
         self._prune_transmux_sessions()
-        if profile == "transcode":
-            limit = int(os.getenv("BROWSER_TRANSCODE_MAX", "2"))
+        start_lock = self._stream_start_lock(stream_id, user_id, session_id)
+        with start_lock:
+            if generation is not None and self._stream_generation(stream_id, user_id, session_id) != generation:
+                raise StreamConfigurationError(_PLAYBACK_CANCELLED)
+            self._kill_transmux_stream(stream_id, user_id, session_id)
+            if profile == "transcode":
+                limit = int(os.getenv("BROWSER_TRANSCODE_MAX", "2"))
+                with self.transmux_lock:
+                    if self._running_profile_count_locked("transcode") >= limit:
+                        raise StreamConfigurationError("Muitas conversoes de video ao mesmo tempo. Tente de novo em instantes.")
+
+            token = secrets.token_urlsafe(24)
+            root = Path(os.getenv("TRANSMUX_CACHE_ROOT", str(self.service.cache_root / "transmux")))
+            session_dir = root / token
+            session_dir.mkdir(parents=True, exist_ok=True)
+            playlist_path = session_dir / "playlist.m3u8"
+            file_output = vod and profile != "copy"
+            stderr_path = session_dir / "ffmpeg.log"
+            if file_output:
+                command = _ffmpeg_vod_mp4_command(source_url, profile)
+            else:
+                command = _ffmpeg_hls_command(source_url, session_dir, playlist_path, profile, vod)
+            stderr_handle = open(stderr_path, "ab")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_handle,
+                    cwd=str(session_dir) if profile != "copy" else None,
+                    close_fds=True,
+                )
+            except Exception:
+                stderr_handle.close()
+                shutil.rmtree(session_dir, ignore_errors=True)
+                raise
+
+            now = time.time()
+            replaced = None
             with self.transmux_lock:
-                if self._running_profile_count_locked("transcode") >= limit:
-                    raise StreamConfigurationError("Muitas conversoes de video ao mesmo tempo. Tente de novo em instantes.")
-
-        token = secrets.token_urlsafe(24)
-        root = Path(os.getenv("TRANSMUX_CACHE_ROOT", str(self.service.cache_root / "transmux")))
-        session_dir = root / token
-        session_dir.mkdir(parents=True, exist_ok=True)
-        playlist_path = session_dir / "playlist.m3u8"
-        file_output = vod and profile != "copy"
-        stderr_path = session_dir / "ffmpeg.log"
-        if file_output:
-            command = _ffmpeg_vod_mp4_command(source_url, profile)
-        else:
-            command = _ffmpeg_hls_command(source_url, session_dir, playlist_path, profile, vod)
-        stderr_handle = open(stderr_path, "ab")
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_handle,
-                cwd=str(session_dir) if profile != "copy" else None,
-                close_fds=True,
-            )
-        except Exception:
-            stderr_handle.close()
-            shutil.rmtree(session_dir, ignore_errors=True)
-            raise
-
-        now = time.time()
-        with self.transmux_lock:
-            self.transmux_sessions[token] = {
-                "stream_id": stream_id,
-                "url": source_url,
-                "dir": str(session_dir),
-                "playlist": str(playlist_path),
-                "process": process,
-                "stderr": stderr_handle,
-                "user_id": user_id,
-                "session_id": session_id,
-                "created_at": now,
-                "last_access": now,
-                "expires_at": now + float(os.getenv("TRANSMUX_SESSION_TTL_SECONDS", str(2 * 60 * 60))),
-                "profile": profile,
-            }
+                self.transmux_sessions[token] = {
+                    "stream_id": stream_id,
+                    "url": source_url,
+                    "dir": str(session_dir),
+                    "playlist": str(playlist_path),
+                    "process": process,
+                    "stderr": stderr_handle,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "created_at": now,
+                    "last_access": now,
+                    "expires_at": now + float(os.getenv("TRANSMUX_SESSION_TTL_SECONDS", str(2 * 60 * 60))),
+                    "profile": profile,
+                }
+                current_generation = int(self.stream_generations.get(self._stream_key(stream_id, user_id, session_id)) or 0)
+                if generation is not None and current_generation != generation:
+                    replaced = self.transmux_sessions.pop(token, None)
+            if replaced:
+                self._terminate_transmux_session(replaced)
+                raise StreamConfigurationError(_PLAYBACK_CANCELLED)
 
         if file_output:
             file_timeout = ready_timeout if ready_timeout is not None else float(os.getenv("BROWSER_VOD_FILE_TIMEOUT_SECONDS", "3600"))
@@ -4398,8 +4464,12 @@ class StreamApplicationServer(ThreadingHTTPServer):
                     playlist_timeout = float(os.getenv("BROWSER_REMUX_START_TIMEOUT_SECONDS", "20"))
             ready = self.wait_for_transmux_playlist(token, playlist_timeout)
         if profile != "copy" and not ready:
+            still_there = bool(self.resolve_transmux_session(token))
             hint = _ffmpeg_failure_hint(session_dir)
-            self._stop_transmux_session(token)
+            if still_there:
+                self._stop_transmux_session(token)
+            else:
+                raise StreamConfigurationError(_PLAYBACK_CANCELLED)
             message = "Nao foi possivel preparar o video para o navegador."
             if hint:
                 message = f"{message} {hint}"
@@ -4465,6 +4535,34 @@ class StreamApplicationServer(ThreadingHTTPServer):
         return False
 
     def stop_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "") -> None:
+        self._bump_stream_generation(stream_id, user_id, session_id)
+        self._kill_transmux_stream(stream_id, user_id, session_id)
+
+    def _stream_key(self, stream_id: str, user_id: str = "", session_id: str = "") -> str:
+        return f"{user_id}\n{session_id}\n{stream_id}"
+
+    def _stream_start_lock(self, stream_id: str, user_id: str = "", session_id: str = "") -> threading.Lock:
+        key = self._stream_key(stream_id, user_id, session_id)
+        with self.transmux_lock:
+            lock = self.stream_open_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self.stream_open_locks[key] = lock
+            return lock
+
+    def _bump_stream_generation(self, stream_id: str, user_id: str = "", session_id: str = "") -> int:
+        key = self._stream_key(stream_id, user_id, session_id)
+        with self.transmux_lock:
+            generation = int(self.stream_generations.get(key) or 0) + 1
+            self.stream_generations[key] = generation
+            return generation
+
+    def _stream_generation(self, stream_id: str, user_id: str = "", session_id: str = "") -> int:
+        key = self._stream_key(stream_id, user_id, session_id)
+        with self.transmux_lock:
+            return int(self.stream_generations.get(key) or 0)
+
+    def _kill_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "") -> None:
         with self.transmux_lock:
             tokens = [
                 token
@@ -4473,8 +4571,29 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 and (not user_id or session.get("user_id") == user_id)
                 and (not session_id or session.get("session_id") == session_id)
             ]
-        for token in tokens:
-            self._stop_transmux_session(token)
+            sessions = [self.transmux_sessions.pop(token) for token in tokens]
+        for session in sessions:
+            self._terminate_transmux_session(session)
+
+    def _terminate_transmux_session(self, session: Dict[str, object]) -> None:
+        process = session.get("process")
+        if isinstance(process, subprocess.Popen) and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+        stderr = session.get("stderr")
+        try:
+            if stderr:
+                stderr.close()
+        except Exception:
+            pass
+        shutil.rmtree(str(session.get("dir") or ""), ignore_errors=True)
 
     def _stop_transmux_session(self, token: str) -> None:
         with self.transmux_lock:

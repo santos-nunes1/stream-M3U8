@@ -25,8 +25,6 @@ const els = {
   seriesStreamerLinks: document.querySelector("#series-streamer-links"),
   loadMore: document.querySelector("#load-more"),
   stopStream: document.querySelector("#stop-stream"),
-  openVlc: document.querySelector("#open-vlc"),
-  resumeBrowserPlayback: document.querySelector("#resume-browser-playback"),
   playerPanel: document.querySelector(".player-panel"),
   nowPlayingLogo: document.querySelector("#now-playing-logo"),
   nowPlayingTitle: document.querySelector("#now-playing-title"),
@@ -40,7 +38,6 @@ const els = {
   bufferHealthDetails: document.querySelector("#buffer-health-details"),
   bufferHealthFill: document.querySelector("#buffer-health-fill"),
   playbackMode: document.querySelector("#playback-mode"),
-  externalPlayer: document.querySelector("#external-player"),
   status: document.querySelector("#status"),
   proxyUrl: document.querySelector("#proxy-url"),
   statusModal: document.querySelector("#status-modal"),
@@ -49,7 +46,6 @@ const els = {
   statusModalMessage: document.querySelector("#status-modal-message"),
   statusModalClose: document.querySelector("#status-modal-close"),
   statusModalActions: document.querySelector("#status-modal-actions"),
-  statusModalOpenExternal: document.querySelector("#status-modal-open-external"),
   statusModalPlayBrowser: document.querySelector("#status-modal-play-browser"),
   episodeModal: document.querySelector("#episode-modal"),
   episodeModalTitle: document.querySelector("#episode-modal-title"),
@@ -64,10 +60,6 @@ const els = {
   downloadProgressBar: document.querySelector("#download-progress-bar"),
   clockTime: document.querySelector("#clock-time"),
   clockDate: document.querySelector("#clock-date"),
-  externalPlayerTitle: document.querySelector("#external-player-title"),
-  externalPlayerDescription: document.querySelector("#external-player-description"),
-  externalPlayerInstallLink: document.querySelector("#external-player-install-link"),
-  externalPlayerRecommendation: document.querySelector("#external-player-recommendation"),
   episodeNav: document.querySelector("#episode-nav"),
   prevEpisode: document.querySelector("#prev-episode"),
   nextEpisode: document.querySelector("#next-episode"),
@@ -82,6 +74,7 @@ let activeEntry = null;
 let activeSeriesPlayback = null;
 let activeUsesProxy = false;
 let playbackSeq = 0;
+let preparingStreamId = "";
 let allEntries = [];
 let allSeriesGroups = [];
 let selectedSeriesKey = "";
@@ -120,7 +113,6 @@ let heartbeatTimer = null;
 let appLoaded = false;
 let startupPlaylistLoadPromise = null;
 let trialCatalogLoadPromise = null;
-let pendingExternalLaunch = null;
 let publicAccessMode = false;
 const PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 500;
@@ -141,16 +133,6 @@ const LIVE_GROW_BUFFER_UNTIL_SECONDS = 90;
 const LIVE_LOW_BUFFER_SECONDS = 45;
 const LIVE_BUFFER_GROWTH_PLAYBACK_RATE = 0.985;
 const LIVE_CATCHUP_PLAYBACK_RATE = 1.02;
-const VLC_ANDROID_PACKAGE = "org.videolan.vlc";
-const VLC_ANDROID_STORE_URL = "https://play.google.com/store/apps/details?id=org.videolan.vlc";
-const VLC_IOS_STORE_URL = "https://apps.apple.com/app/vlc-media-player/id650377962";
-const VLC_DESKTOP_URL = "https://www.videolan.org/vlc/";
-const OUTPLAYER_IOS_STORE_URL = "https://apps.apple.com/app/outplayer/id1449923287";
-const OUTPLAYER_SITE_URL = "https://outplayer.app/";
-const EXTERNAL_PLAYER_LABELS = {
-  vlc: "VLC",
-  outplayer: "Outplayer",
-};
 const TV_QUICK_LINK_GROUPS = [
   {
     title: "TV aberta",
@@ -290,11 +272,6 @@ function normalizePlaybackMode(mode) {
 
 function currentPlaybackMode() {
   return normalizePlaybackMode(els.playbackMode.value);
-}
-
-function currentExternalPlayer() {
-  const player = els.externalPlayer?.value || "vlc";
-  return EXTERNAL_PLAYER_LABELS[player] ? player : "vlc";
 }
 
 function authHeaders() {
@@ -536,58 +513,6 @@ async function logout() {
   publicAccessMode = false;
   showLogin();
   setAuthMessage("Sessao encerrada.", "ok");
-}
-
-function recommendedExternalPlayer() {
-  const platform = getClientPlatform();
-  if (platform === "ios") {
-    return {
-      player: "outplayer",
-      label: "Outplayer",
-      title: "Para uma melhor experiencia no iPhone/iPad, instale o Outplayer.",
-      description: "O Outplayer costuma ser uma boa opcao para TV ao vivo no iOS. Se algum stream nao abrir, mantenha o VLC como alternativa.",
-      message: "Melhor escolha para iPhone/iPad: Outplayer. Alternativa: VLC.",
-      storeUrl: OUTPLAYER_IOS_STORE_URL,
-    };
-  }
-  if (platform === "android") {
-    return {
-      player: "vlc",
-      label: "VLC",
-      title: "Para uma melhor experiencia no Android, instale o VLC.",
-      description: "O VLC e a opcao mais compativel no Android para abrir streams de TV ao vivo com menos falhas.",
-      message: "Melhor escolha para Android: VLC.",
-      storeUrl: VLC_ANDROID_STORE_URL,
-    };
-  }
-  return {
-    player: "vlc",
-    label: "VLC",
-    title: "Para uma melhor experiencia no desktop, instale o VLC.",
-    description: "No Windows, macOS e Linux, o botao de player externo tenta abrir o VLC instalado diretamente. Se o navegador bloquear a abertura, reproduza no navegador.",
-    message: "Melhor escolha para desktop: VLC instalado no computador.",
-    storeUrl: VLC_DESKTOP_URL,
-  };
-}
-
-function applyExternalPlayerRecommendation() {
-  const recommendation = recommendedExternalPlayer();
-  if (els.externalPlayer && EXTERNAL_PLAYER_LABELS[recommendation.player]) {
-    els.externalPlayer.value = recommendation.player;
-  }
-  if (els.externalPlayerTitle) {
-    els.externalPlayerTitle.textContent = recommendation.title;
-  }
-  if (els.externalPlayerDescription) {
-    els.externalPlayerDescription.firstChild.textContent = `${recommendation.description} `;
-  }
-  if (els.externalPlayerInstallLink) {
-    els.externalPlayerInstallLink.href = recommendation.storeUrl;
-    els.externalPlayerInstallLink.textContent = `Instalar ${recommendation.label}`;
-  }
-  if (els.externalPlayerRecommendation) {
-    els.externalPlayerRecommendation.innerHTML = `${escapeHtml(recommendation.message)} <a href="${recommendation.storeUrl}" target="_blank" rel="noopener noreferrer">Instalar ${escapeHtml(recommendation.label)}</a>`;
-  }
 }
 
 async function loadAppConfig() {
@@ -1012,9 +937,6 @@ function persistLastSelectedStream(streamId, entry = null) {
     saved_at: Date.now(),
   };
   localStorage.setItem(LAST_SELECTED_STREAM_STORAGE_KEY, JSON.stringify(payload));
-  if (els.resumeBrowserPlayback) {
-    els.resumeBrowserPlayback.hidden = false;
-  }
 }
 
 function loadLastSelectedStream() {
@@ -1046,10 +968,6 @@ function restoreLastSelectedStream() {
   }
   updateNowPlaying(activeEntry);
   els.stopStream.disabled = false;
-  els.openVlc.disabled = false;
-  if (els.resumeBrowserPlayback) {
-    els.resumeBrowserPlayback.hidden = false;
-  }
 }
 
 function clearPlaybackSelection() {
@@ -1059,10 +977,6 @@ function clearPlaybackSelection() {
   activeUsesProxy = false;
   localStorage.removeItem(LAST_SELECTED_STREAM_STORAGE_KEY);
   els.stopStream.disabled = true;
-  els.openVlc.disabled = true;
-  if (els.resumeBrowserPlayback) {
-    els.resumeBrowserPlayback.hidden = true;
-  }
   els.proxyUrl.textContent = "";
   destroyPlayer();
   resetNowPlaying();
@@ -1075,9 +989,9 @@ function showStatusModal(title, message, type = "loading") {
   els.statusModalTitle.textContent = title;
   els.statusModalMessage.textContent = message;
   els.statusModalActions.hidden = true;
-  els.statusModalOpenExternal.hidden = false;
-  els.statusModalPlayBrowser.hidden = false;
-  setStatusModalExternalButton();
+  if (els.statusModalPlayBrowser) {
+    els.statusModalPlayBrowser.hidden = false;
+  }
   if (type !== "loading") {
     hideDownloadProgress();
   }
@@ -1125,20 +1039,6 @@ function finishStatusModal(title, message, type) {
   showStatusModal(title, message, type);
 }
 
-function showExternalPlayerModal(title, message, options = {}) {
-  showStatusModal(title, message, "info");
-  els.statusModalActions.hidden = false;
-  els.statusModalPlayBrowser.hidden = options.allowBrowser === false;
-}
-
-function setStatusModalExternalButton(label = "Abrir player externo", disabled = false) {
-  if (!els.statusModalOpenExternal) {
-    return;
-  }
-  els.statusModalOpenExternal.textContent = label;
-  els.statusModalOpenExternal.disabled = disabled;
-}
-
 function setPlaylistLoading(message) {
   els.entryCount.textContent = message;
   els.loadMore.hidden = true;
@@ -1152,6 +1052,9 @@ function setPlaylistLoading(message) {
 }
 
 function showStreamError(error) {
+  if (!error || error.message === "Reproducao cancelada.") {
+    return;
+  }
   setStatus(error.message, "error");
   showPlaybackLoadingError(error.message);
   finishStatusModal("Erro ao iniciar stream", error.message, "error");
@@ -1313,7 +1216,6 @@ async function startStream(streamId, entry = null, options = {}) {
     url: streamId,
     playback_mode: currentPlaybackMode(),
   });
-  pendingExternalLaunch = null;
   await stopActiveStream();
   const token = ++playbackSeq;
   const mediaKind = inferMediaKind(streamId, entry);
@@ -1331,7 +1233,6 @@ async function startStream(streamId, entry = null, options = {}) {
   persistLastSelectedStream(activeStreamId, activeEntry);
   activeUsesProxy = false;
   els.stopStream.disabled = false;
-  els.openVlc.disabled = false;
 
   if (playbackMode === "direct") {
     els.proxyUrl.textContent = streamId;
@@ -1367,28 +1268,6 @@ function browserPlaybackSupportedFor(mediaKind) {
   return true;
 }
 
-function prepareLiveExternalPlayback(mediaKind = "") {
-  destroyPlayer();
-  els.proxyUrl.textContent = "";
-  const playerLabel = EXTERNAL_PLAYER_LABELS[currentExternalPlayer()] || "player externo";
-  const allowBrowser = browserPlaybackSupportedFor(mediaKind);
-  const message = getClientPlatform() === "desktop"
-    ? "Este conteudo e ao vivo. Para uma melhor experiencia e maior estabilidade, e recomendavel usar o player externo. Se preferir, voce tambem pode reproduzir no navegador."
-    : allowBrowser
-      ? `Este conteúdo é ao vivo. Para uma melhor experiencia e maior estabilidade, recomendamos abrir no ${playerLabel}. Se preferir, toque em "Reproduzir no navegador".`
-      : `Este conteúdo é ao vivo. Para uma melhor experiencia, recomendamos abrir no ${playerLabel}.`;
-  setStatus(
-    allowBrowser ? "Conteúdo ao vivo selecionado: player externo recomendado." : "Conteúdo ao vivo selecionado: use player externo.",
-    "ok"
-  );
-  showExternalPlayerModal(
-    "Player externo recomendado",
-    message,
-    { allowBrowser }
-  );
-  prepareExternalLaunchFromModal();
-}
-
 async function startProxyStream(streamId, entry, token, reason = "", forceDelivery = "") {
   if (token !== playbackSeq) {
     return;
@@ -1400,18 +1279,32 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
     : (isSeriesPlayback(streamId, entry) ? "Preparando o episódio completo..." : "Preparando o vídeo no servidor...");
   setStatus(preparingMessage);
   showPlaybackLoading(preparingMessage);
-  const payload = await postJson("/stream/start", {
-    stream_id: streamId,
-    title: entry?.title || "Link direto",
-    group: entry?.group || "",
-    category: entry?.category || "",
-    media_kind: entry?.media_kind || "",
-    client: "browser",
-    force_delivery: forceDelivery || "",
-  });
+  preparingStreamId = streamId;
+  let payload;
+  try {
+    payload = await postJson("/stream/start", {
+      stream_id: streamId,
+      title: entry?.title || "Link direto",
+      group: entry?.group || "",
+      category: entry?.category || "",
+      media_kind: entry?.media_kind || "",
+      client: "browser",
+      force_delivery: forceDelivery || "",
+    });
+  } catch (error) {
+    if (preparingStreamId === streamId) {
+      preparingStreamId = "";
+    }
+    if (token !== playbackSeq || error?.message === "Reproducao cancelada.") {
+      return;
+    }
+    throw error;
+  }
+  if (preparingStreamId === streamId) {
+    preparingStreamId = "";
+  }
 
   if (token !== playbackSeq) {
-    await postJson("/stream/stop", { stream_id: streamId }).catch(() => undefined);
     return;
   }
 
@@ -1419,7 +1312,6 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
   persistLastSelectedStream(streamId, activeEntry || entry || { title: "Link direto", url: streamId });
   activeUsesProxy = true;
   els.stopStream.disabled = false;
-  els.openVlc.disabled = false;
   els.proxyUrl.textContent = payload.local_proxy_url;
   const serverKind = payload.media_kind || "hls";
   const livePlayback = inferLivePlayback(streamId, entry, inferMediaKind(streamId, entry));
@@ -1477,12 +1369,6 @@ function stopPlaybackMonitor() {
     clearInterval(playbackMonitorTimer);
     playbackMonitorTimer = null;
   }
-  els.video.playbackRate = 1;
-}
-
-function pauseBrowserPlaybackForExternalPlayer() {
-  stopPlaybackMonitor();
-  els.video.pause();
   els.video.playbackRate = 1;
 }
 
@@ -1750,22 +1636,18 @@ async function stopActiveStream() {
   hidePlaybackLoading();
   if (!activeStreamId) {
     destroyPlayer();
-    els.openVlc.disabled = true;
     return;
   }
 
-  const streamId = activeStreamId;
+  const streamId = activeStreamId || preparingStreamId;
   const selectedEntry = activeEntry;
   logUserAction("Parando stream", { url: streamId });
   activeStreamId = "";
   activeEntry = selectedEntry;
-  const shouldStopProxy = activeUsesProxy;
+  const shouldStopProxy = activeUsesProxy || Boolean(preparingStreamId);
+  preparingStreamId = "";
   activeUsesProxy = false;
   els.stopStream.disabled = true;
-  els.openVlc.disabled = true;
-  if (els.resumeBrowserPlayback) {
-    els.resumeBrowserPlayback.hidden = !streamId;
-  }
   els.proxyUrl.textContent = "";
   destroyPlayer();
   if (selectedEntry) {
@@ -1776,268 +1658,6 @@ async function stopActiveStream() {
   if (shouldStopProxy) {
     await postJson("/stream/stop", { stream_id: streamId }).catch(() => undefined);
   }
-}
-
-async function openActiveStreamInExternalPlayer() {
-  const streamUrl = activeStreamId;
-  const player = currentExternalPlayer();
-  const playerLabel = EXTERNAL_PLAYER_LABELS[player] || "player externo";
-  if (!streamUrl) {
-    setStatus(`Selecione um stream antes de abrir no ${playerLabel}.`, "error");
-    return;
-  }
-
-  try {
-    pauseBrowserPlaybackForExternalPlayer();
-    if (!pendingExternalLaunch) {
-      setStatus(`Gerando link privado para abrir no ${playerLabel}...`);
-      await prepareExternalLaunch(streamUrl, activeEntry);
-    }
-    launchPreparedExternalPlayer();
-  } catch (error) {
-    showStreamError(error);
-  }
-}
-
-async function prepareExternalLaunchFromModal() {
-  if (!activeStreamId) {
-    return;
-  }
-  const playerLabel = EXTERNAL_PLAYER_LABELS[currentExternalPlayer()] || "player externo";
-  setStatusModalExternalButton("Preparando link...", true);
-  try {
-    await prepareExternalLaunch(activeStreamId, activeEntry);
-    setStatusModalExternalButton(`Abrir ${playerLabel}`, false);
-    const linkMode = currentExternalPlayer() === "vlc" && getClientPlatform() === "android" ? "Link estavel" : "Link direto";
-    setStatus(`${linkMode} pronto para abrir no ${playerLabel}.`, "ok");
-  } catch (error) {
-    setStatusModalExternalButton("Tentar abrir player externo", false);
-    setStatus(error.message, "error");
-  }
-}
-
-async function prepareExternalLaunch(streamUrl, entry = null) {
-  const player = currentExternalPlayer();
-  const playerLabel = EXTERNAL_PLAYER_LABELS[player] || "player externo";
-  const response = await postJson("/api/vlc/open", {
-    stream_id: streamUrl,
-    title: entry?.title || "Link direto",
-  });
-  if (!response.stream_url) {
-    throw new Error("Nao foi possivel gerar o link do player externo.");
-  }
-
-  const externalStreamUrl = externalPlayerStreamUrl(response, player);
-  const launch = buildExternalPlayerLaunchTarget(externalStreamUrl, player, response.launch_urls || [], response.mime_type || "");
-  if (launch.unsupportedMessage) {
-    if (launch.fallbackUrl) {
-      window.location.href = launch.fallbackUrl;
-    }
-    throw new Error(launch.unsupportedMessage);
-  }
-  const browserFallback = launch.browserFallback
-    ? () => {
-      hideStatusModal();
-      setStatus("VLC nao abriu. Iniciando reproducao no navegador...", "ok");
-      return startStream(streamUrl, entry || { title: "Link direto", url: streamUrl }, { allowLiveBrowser: true });
-    }
-    : null;
-
-  pendingExternalLaunch = { launch, browserFallback, playerLabel };
-  return pendingExternalLaunch;
-}
-
-function externalPlayerStreamUrl(response, player) {
-  if (player === "vlc" && getClientPlatform() === "android" && response.proxy_stream_url) {
-    return response.proxy_stream_url;
-  }
-  return response.stream_url;
-}
-
-function launchPreparedExternalPlayer() {
-  if (!pendingExternalLaunch) {
-    return false;
-  }
-  const { launch, browserFallback, playerLabel } = pendingExternalLaunch;
-  pendingExternalLaunch = null;
-  setStatus(launch.status || `Abrindo ${playerLabel}...`);
-  if (launch.androidIntent) {
-    launchAndroidExternalApp(launch.url, launch.fallbackUrl, launch.fallbackMessage, launch.timeoutMs);
-    return true;
-  }
-  launchExternalApp(launch.urls || [launch.url], launch.fallbackUrl, launch.fallbackMessage, launch.timeoutMs, browserFallback);
-  return true;
-}
-
-function buildExternalPlayerLaunchTarget(streamUrl, player, launchUrls = [], mimeType = "") {
-  if (player === "outplayer") {
-    return buildOutplayerLaunchTarget(streamUrl);
-  }
-  return buildVlcLaunchTarget(streamUrl, launchUrls, mimeType);
-}
-
-function buildVlcLaunchTarget(streamUrl, launchUrls = [], mimeType = "") {
-  const platform = getClientPlatform();
-  if (platform === "android") {
-    return {
-      url: buildAndroidPlayerIntent(streamUrl, VLC_ANDROID_PACKAGE, VLC_ANDROID_STORE_URL, androidVlcMimeType(streamUrl, mimeType)),
-      fallbackUrl: VLC_ANDROID_STORE_URL,
-      fallbackMessage: "VLC nao encontrado. Redirecionando para a Play Store...",
-      status: "Tentando abrir o VLC no Android...",
-      timeoutMs: 4200,
-      androidIntent: true,
-    };
-  }
-  if (platform === "ios") {
-    return {
-      url: `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`,
-      fallbackUrl: VLC_IOS_STORE_URL,
-      fallbackMessage: "VLC nao encontrado. Redirecionando para a App Store...",
-      status: "Tentando abrir o VLC no iOS...",
-      timeoutMs: 1800,
-    };
-  }
-  return {
-    urls: [...launchUrls, ...buildDesktopVlcUrls(streamUrl)],
-    fallbackUrl: "",
-    fallbackMessage: "Nao foi possivel confirmar a abertura do VLC. Iniciando reproducao no navegador...",
-    status: "Tentando abrir o VLC instalado no computador...",
-    timeoutMs: 6000,
-    browserFallback: true,
-  };
-}
-
-function buildOutplayerLaunchTarget(streamUrl) {
-  const platform = getClientPlatform();
-  if (platform === "ios") {
-    return {
-      url: `outplayer://x-callback-url/play?url=${encodeURIComponent(streamUrl)}`,
-      fallbackUrl: OUTPLAYER_IOS_STORE_URL,
-      fallbackMessage: "Outplayer nao encontrado. Redirecionando para a App Store...",
-      status: "Tentando abrir o Outplayer no iOS...",
-      timeoutMs: 1800,
-    };
-  }
-  return {
-    unsupportedMessage: "Outplayer e recomendado apenas no iPhone/iPad. Use VLC neste dispositivo.",
-    fallbackUrl: platform === "android" ? "" : OUTPLAYER_SITE_URL,
-  };
-}
-
-function getClientPlatform() {
-  const userAgent = navigator.userAgent || "";
-  if (/android/i.test(userAgent)) {
-    return "android";
-  }
-  if (/iPad|iPhone|iPod/.test(userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
-    return "ios";
-  }
-  return "desktop";
-}
-
-function androidVlcMimeType(streamUrl, mimeType = "") {
-  const normalized = String(mimeType || "").toLowerCase();
-  if (normalized === "application/vnd.apple.mpegurl" || /\.m3u8(?:[?#]|$)/i.test(streamUrl)) {
-    return "application/vnd.apple.mpegurl";
-  }
-  return "video/*";
-}
-
-function buildAndroidPlayerIntent(streamUrl, packageName, storeUrl, mimeType = "video/*") {
-  const fallbackUrl = encodeURIComponent(storeUrl);
-  try {
-    const url = new URL(streamUrl);
-    const scheme = url.protocol.replace(":", "") || "https";
-    const target = `${url.host}${url.pathname}${url.search}${url.hash}`;
-    return `intent://${target}#Intent;scheme=${scheme};action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;type=${mimeType};package=${packageName};S.browser_fallback_url=${fallbackUrl};end`;
-  } catch (error) {
-    return `intent://${streamUrl.replace(/^https?:\/\//i, "")}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;type=${mimeType};package=${packageName};S.browser_fallback_url=${fallbackUrl};end`;
-  }
-}
-
-function buildDesktopVlcUrls(streamUrl) {
-  const encodedStreamUrl = encodeURIComponent(streamUrl);
-  const rawStreamUrl = streamUrl.replace(/"/g, "%22");
-  return [
-    `vlc://${rawStreamUrl}`,
-    `vlc://${encodedStreamUrl}`,
-    `vlc-x-callback://x-callback-url/stream?url=${encodedStreamUrl}`,
-  ];
-}
-
-function launchExternalApp(urls, fallbackUrl, fallbackMessage, timeoutMs, onFallback = null) {
-  const launchUrls = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
-  let appOpened = false;
-  const markOpened = () => {
-    appOpened = true;
-  };
-  const cleanup = () => {
-    document.removeEventListener("visibilitychange", handleVisibilityChange);
-    window.removeEventListener("blur", markOpened);
-    window.removeEventListener("pagehide", markOpened);
-  };
-  const handleVisibilityChange = () => {
-    if (document.hidden) {
-      markOpened();
-    }
-  };
-
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  window.addEventListener("blur", markOpened);
-  window.addEventListener("pagehide", markOpened);
-  launchUrls.forEach((url, index) => {
-    setTimeout(() => {
-      if (!appOpened && !document.hidden) {
-        window.location.href = url;
-      }
-    }, index * 900);
-  });
-
-  setTimeout(() => {
-    cleanup();
-    if (!appOpened && !document.hidden) {
-      setStatus(fallbackMessage, "error");
-      if (fallbackUrl) {
-        window.location.href = fallbackUrl;
-      } else if (onFallback) {
-        onFallback().catch(showStreamError);
-      } else {
-        finishStatusModal("Nao foi possivel abrir o VLC", fallbackMessage, "error");
-      }
-    }
-  }, timeoutMs);
-}
-
-function launchAndroidExternalApp(url, fallbackUrl, fallbackMessage, timeoutMs) {
-  let appOpened = false;
-  const markOpened = () => {
-    appOpened = true;
-  };
-  const cleanup = () => {
-    document.removeEventListener("visibilitychange", handleVisibilityChange);
-    window.removeEventListener("blur", markOpened);
-    window.removeEventListener("pagehide", markOpened);
-  };
-  const handleVisibilityChange = () => {
-    if (document.hidden) {
-      markOpened();
-    }
-  };
-
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  window.addEventListener("blur", markOpened);
-  window.addEventListener("pagehide", markOpened);
-  window.location.href = url;
-
-  setTimeout(() => {
-    cleanup();
-    if (!appOpened && !document.hidden) {
-      setStatus(fallbackMessage, "error");
-      if (fallbackUrl) {
-        window.location.href = fallbackUrl;
-      }
-    }
-  }, timeoutMs);
 }
 
 async function loadPlaylist(payload, endpoint = "/api/playlist/parse") {
@@ -2788,6 +2408,9 @@ async function loadDailyGameShortcuts() {
   if (dailyGameShortcutCacheKey === cacheKey && (dailyGameShortcutEntries.length || worldCupShortcutEntries.length)) {
     renderDailyGameQuickLinks();
     renderWorldCupQuickLinks();
+    if (selectedCategory === "daily_games" || selectedCategory === "world_cup") {
+      renderEntries();
+    }
     return;
   }
   if (dailyGameShortcutLoadPromise) {
@@ -2817,6 +2440,9 @@ async function loadDailyGameShortcuts() {
     dailyGameShortcutEntries = uniqueFootballEntries(dailyData.entries);
     dailyGameShortcutCacheKey = cacheKey;
     renderDailyGameQuickLinks();
+    if (selectedCategory === "daily_games" || selectedCategory === "world_cup") {
+      renderEntries();
+    }
   })();
   try {
     await dailyGameShortcutLoadPromise;
@@ -2894,32 +2520,20 @@ function renderDailyGameQuickLinks() {
   if (!els.dailyGameQuickLinks) {
     return;
   }
-  const groups = DAILY_GAME_QUICK_LINK_GROUPS.map((group) => {
-    if (group.title !== "Futebol") {
-      return group;
-    }
-    return {
-      ...group,
-      channels: dailyGameShortcutEntries.map((entry, index) => ({
-        name: dailyGameShortcutLabel(entry),
-        domain: "fifa.com",
-        gameIndex: index,
-      })),
-    };
-  });
-  els.dailyGameQuickLinks.innerHTML = groups.map((group) => `
+  const channels = DAILY_GAME_QUICK_LINK_GROUPS.find((group) => group.title === "Canais esportivos")?.channels || [];
+  els.dailyGameQuickLinks.innerHTML = `
     <section class="tv-quick-column">
-      <span class="tv-quick-title">${escapeHtml(group.title)}</span>
+      <span class="tv-quick-title">Canais esportivos</span>
       <div class="tv-quick-list">
-        ${group.channels.length ? group.channels.map((channel) => `
-          <button class="tv-quick-link" type="button" data-channel="${escapeHtml(channel.name)}" data-search="${escapeHtml(quickLinkSearchValue(channel))}" ${Number.isInteger(channel.gameIndex) ? `data-game-index="${channel.gameIndex}"` : ""}>
+        ${channels.map((channel) => `
+          <button class="tv-quick-link" type="button" data-channel="${escapeHtml(channel.name)}" data-search="${escapeHtml(quickLinkSearchValue(channel))}">
             <img src="${tvQuickLogoUrl(channel.domain)}" alt="" loading="lazy" />
             <span>${escapeHtml(channel.name)}</span>
           </button>
-        `).join("") : '<span class="tv-quick-empty">Nenhum jogo com horario encontrado.</span>'}
+        `).join("")}
       </div>
     </section>
-  `).join("");
+  `;
   updateQuickLinksVisibility();
 }
 
@@ -3016,27 +2630,424 @@ function isWorldCupAwaitingSelection() {
   return selectedCategory === "world_cup" && !els.entrySearch.value.trim() && !worldCupCatalogRequested;
 }
 
+function updateCatalogHeading() {
+  const heading = document.querySelector("#catalog-heading");
+  if (!heading) {
+    return;
+  }
+  if (els.entrySearch?.value.trim() && !selectedSeriesKey && !selectedSeriesCatalog) {
+    heading.textContent = "Catálogo";
+    return;
+  }
+  const labels = {
+    daily_games: "Jogos do dia",
+    world_cup: "Copa do Mundo 2026",
+    series: "Séries",
+    movies: "Filmes",
+    tv: "TV",
+    reality: "Reality",
+  };
+  heading.textContent = labels[selectedCategory] || "Catálogo";
+}
+
+function stripVariantTags(title) {
+  return String(title || "")
+    .replace(/\((?:19|20)\d{2}\)/g, " ")
+    .replace(/\b(fhd|uhd|hd|sd|4k|1080p|720p|480p|hdr|dublado|legendado|dual audio|webrip|bluray|cam)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function catalogTitleKey(entry) {
+  if (entry?.category === "series" && entry.series_key) {
+    return `series:${entry.series_key}`;
+  }
+  const normalized = normalizeCatalogText(stripVariantTags(entry?.series_title || entry?.title || ""));
+  if (normalized.length < 2) {
+    return "";
+  }
+  return `${entry?.category || "other"}:${normalized}`;
+}
+
+function displayTitleForGroup(entry) {
+  if (entry?.series_title) {
+    return entry.series_title;
+  }
+  return stripVariantTags(entry?.title || "") || entry?.title || "Título";
+}
+
+function teamHue(name) {
+  let hash = 0;
+  const value = String(name || "");
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash % 360;
+}
+
+function teamMark(name) {
+  const words = String(name || "").split(/\s+/).filter((word) => word.length > 2);
+  const source = words.length >= 2 ? `${words[0][0]}${words[1][0]}` : String(name || "").replace(/[^\p{L}\p{N}]/gu, "");
+  return (source.slice(0, 3) || "?").toLocaleUpperCase("pt-BR");
+}
+
+function parseFootballMatch(entry) {
+  if (!entry || entry.category === "movies" || entry.category === "series") {
+    return null;
+  }
+  const title = String(entry.title || "");
+  const group = String(entry.group || "");
+  const sportsContext = entry.category === "daily_games"
+    || entry.category === "world_cup"
+    || selectedCategory === "daily_games"
+    || selectedCategory === "world_cup"
+    || /jogos?\s+d[oe]\s+(dia|hoje)/i.test(`${title} ${group}`);
+  if (!sportsContext) {
+    return null;
+  }
+  const timeMatch = title.match(/\b([01]?\d|2[0-3])\s*[:h]\s*([0-5]\d)\b/);
+  if (!timeMatch) {
+    return null;
+  }
+  const time = `${timeMatch[1].padStart(2, "0")}:${timeMatch[2]}`;
+  const pieces = title.split(/[•|]/).map((piece) => piece.trim()).filter(Boolean);
+  const teamPiece = pieces.find((piece) => /\s(?:x|vs\.?|versus)\s/iu.test(piece)) || title;
+  const withoutTime = teamPiece
+    .replace(/\(\d+\)/g, " ")
+    .replace(timeMatch[0], " ")
+    .replace(/[⏰]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const teams = withoutTime.match(/^(.+?)\s+(?:x|vs\.?|versus)\s+(.+?)$/iu);
+  if (!teams) {
+    return null;
+  }
+  const home = teams[1].replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/\s+/g, " ").trim();
+  const away = teams[2].replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/\s+/g, " ").trim();
+  if (home.length < 2 || away.length < 2) {
+    return null;
+  }
+  const competition = String(group || "").replace(/[^\p{L}\p{N}\s|:-]+/gu, " ").replace(/\s+/g, " ").trim();
+  return {
+    time,
+    home,
+    away,
+    competition: !competition || /jogos d[oe] (dia|hoje)/i.test(competition) ? "Hoje" : competition,
+    key: `${time}|${normalizeCatalogText(home)}|${normalizeCatalogText(away)}`,
+  };
+}
+
+function groupFootballMatches(entries) {
+  const groups = new Map();
+  (entries || []).forEach((entry) => {
+    const match = parseFootballMatch(entry);
+    if (!match) {
+      return;
+    }
+    const existing = groups.get(match.key);
+    if (!existing) {
+      groups.set(match.key, { ...match, entries: [entry] });
+      return;
+    }
+    existing.entries.push(entry);
+  });
+  return Array.from(groups.values()).sort((a, b) => a.time.localeCompare(b.time) || a.home.localeCompare(b.home, "pt-BR"));
+}
+
+function groupCatalogTitles(entries) {
+  const groups = new Map();
+  (entries || []).forEach((entry) => {
+    const key = catalogTitleKey(entry);
+    if (!key) {
+      return;
+    }
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        key,
+        title: displayTitleForGroup(entry),
+        category: entry.category || "",
+        entries: [entry],
+      });
+      return;
+    }
+    existing.entries.push(entry);
+    const candidate = displayTitleForGroup(entry);
+    if (candidate.length < existing.title.length) {
+      existing.title = candidate;
+    }
+  });
+  return Array.from(groups.values()).sort((a, b) => a.title.localeCompare(b.title, "pt-BR"));
+}
+
+function catalogSection(title, node) {
+  const section = document.createElement("section");
+  section.className = "catalog-section";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  section.appendChild(heading);
+  section.appendChild(node);
+  return section;
+}
+
+function showPlaybackChoices(title, entries) {
+  if (!els.episodeModal) {
+    const first = entries.find((entry) => entry.url && !entry.locked) || entries[0];
+    if (first?.url) {
+      startStream(first.url, first).catch(showStreamError);
+    }
+    return;
+  }
+  els.episodeModal.hidden = false;
+  els.episodeModalTitle.textContent = title;
+  els.episodeModalMessage.textContent = `${entries.length} opcao(oes) deste titulo.`;
+  els.episodeModalOptions.innerHTML = "";
+  entries.forEach((entry) => {
+    const button = document.createElement("button");
+    button.className = `episode-option ${entry.locked || !entry.url ? "locked" : ""}`.trim();
+    button.type = "button";
+    button.innerHTML = `
+      <strong>${escapeHtml(entry.title || title)}</strong>
+      <small>${escapeHtml(entry.locked ? (entry.locked_reason || "Conteudo bloqueado") : formatEntryMeta(entry))}</small>
+    `;
+    button.addEventListener("click", () => {
+      if (entry.locked || !entry.url) {
+        showLockedContentMessage(entry);
+        return;
+      }
+      hideEpisodeOptionsModal();
+      scrollPlayerIntoView();
+      startStream(entry.url, entry).catch(showStreamError);
+    });
+    els.episodeModalOptions.appendChild(button);
+  });
+}
+
+function openGroupedItem(entries, title) {
+  if (!entries.length) {
+    return;
+  }
+  const seriesKey = entries[0].series_key;
+  if (seriesKey && entries.every((entry) => entry.category === "series" && entry.series_key === seriesKey)) {
+    openSeriesGroup(seriesGroupFromEntry(entries[0])).catch((error) => setStatus(error.message, "error"));
+    return;
+  }
+  if (entries.length === 1) {
+    const entry = entries[0];
+    if (entry.locked || !entry.url) {
+      showLockedContentMessage(entry);
+      return;
+    }
+    scrollPlayerIntoView();
+    startStream(entry.url, entry).catch(showStreamError);
+    return;
+  }
+  showPlaybackChoices(title, entries);
+}
+
+function createSeriesTitleCard(series) {
+  const item = document.createElement("div");
+  item.className = "series-title-card";
+  item.setAttribute("role", "button");
+  item.tabIndex = 0;
+  const displayTitle = series.popular_title || series.title || "Serie";
+  const displaySeries = { ...series, title: displayTitle };
+  const favorite = seriesFavorite(displaySeries);
+  const logo = imageWithFallback({
+    className: "series-poster",
+    src: series.logo,
+    candidates: series.logo_candidates || [],
+    placeholder: `<div class="series-poster placeholder">${escapeHtml(displayTitle.slice(0, 1))}</div>`,
+  });
+  const seasons = (series.seasons || [])
+    .map((season) => `<span class="series-season-pill">${escapeHtml(compactSeasonLabel(season.season))} - ${season.episode_count} ep.</span>`)
+    .join("");
+  item.innerHTML = `
+    <div class="series-poster-wrap">${logo}</div>
+    <div class="series-card-copy">
+      <strong>${escapeHtml(displayTitle)}</strong>
+      <small>${escapeHtml(series.group || "Sem grupo")}</small>
+      <small>${series.total_episodes || 0} episodio(s)</small>
+      <span class="series-season-list">${seasons}</span>
+    </div>
+    <button class="favorite-toggle card-favorite-toggle ${isFavorite(favorite) ? "active" : ""}" type="button" aria-label="Favoritar serie ${escapeHtml(displayTitle)}">${isFavorite(favorite) ? "★" : "☆"}</button>
+  `;
+  const openSeries = () => openSeriesGroup(displaySeries);
+  item.addEventListener("click", openSeries);
+  item.addEventListener("keydown", (event) => {
+    if (event.target.closest(".favorite-toggle")) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openSeries();
+    }
+  });
+  item.querySelector(".favorite-toggle").addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleFavorite(favorite);
+  });
+  bindImageFallbacks(item);
+  return item;
+}
+
+function createTitleGroupCard(group) {
+  const item = document.createElement("div");
+  item.className = "series-title-card";
+  item.setAttribute("role", "button");
+  item.tabIndex = 0;
+  const poster = coalesceCover(group.entries, group.title);
+  const logo = imageWithFallback({
+    className: "series-poster",
+    src: poster,
+    candidates: coverCandidates(group.entries, poster, group.title),
+    placeholder: `<div class="series-poster placeholder">${escapeHtml(group.title.slice(0, 1))}</div>`,
+    alt: group.title,
+  });
+  const countLabel = group.entries.length > 1 ? `${group.entries.length} opções` : categoryLabel(group.category);
+  item.innerHTML = `
+    <div class="series-poster-wrap">${logo}</div>
+    <div class="series-card-copy">
+      <strong>${escapeHtml(group.title)}</strong>
+      <small>${escapeHtml(countLabel)}</small>
+      <small>${escapeHtml(group.entries[0]?.group || categoryLabel(group.category))}</small>
+    </div>
+  `;
+  const openGroup = () => openGroupedItem(group.entries, group.title);
+  item.addEventListener("click", openGroup);
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openGroup();
+    }
+  });
+  bindImageFallbacks(item);
+  return item;
+}
+
+function buildMatchBoard(matches) {
+  const board = document.createElement("div");
+  board.className = "match-board";
+  matches.forEach((match) => {
+    const card = document.createElement("button");
+    card.className = "match-card";
+    card.type = "button";
+    const channelLabel = match.entries.length > 1 ? `${match.entries.length} canais` : "1 canal";
+    card.innerHTML = `
+      <span class="match-team">
+        <span class="team-crest" style="--hue: ${teamHue(match.home)}">${escapeHtml(teamMark(match.home))}</span>
+        <strong>${escapeHtml(match.home)}</strong>
+      </span>
+      <span class="match-center">
+        <span class="match-time">${escapeHtml(match.time)}</span>
+        <span class="match-vs">VS</span>
+        <span class="match-channels">${escapeHtml(channelLabel)}</span>
+      </span>
+      <span class="match-team match-team-away">
+        <span class="team-crest" style="--hue: ${teamHue(match.away)}">${escapeHtml(teamMark(match.away))}</span>
+        <strong>${escapeHtml(match.away)}</strong>
+      </span>
+      <footer><span>${escapeHtml(match.competition)}</span><span>Toque para assistir</span></footer>
+    `;
+    card.addEventListener("click", () => openGroupedItem(match.entries, `${match.home} x ${match.away}`));
+    board.appendChild(card);
+  });
+  return board;
+}
+
+function renderSportsBoardIfReady() {
+  const sportsCategory = selectedCategory === "daily_games" || selectedCategory === "world_cup";
+  if (!sportsCategory) {
+    return false;
+  }
+  const entries = selectedCategory === "world_cup" ? worldCupShortcutEntries : dailyGameShortcutEntries;
+  if (!entries.length) {
+    return false;
+  }
+  const matches = groupFootballMatches(entries);
+  const loose = entries.filter((entry) => !parseFootballMatch(entry));
+  const titles = groupCatalogTitles(loose);
+  els.entryCount.textContent = matches.length ? `${matches.length} jogo(s) de hoje` : `${entries.length} evento(s)`;
+  els.loadMore.hidden = true;
+  els.playlistEntries.className = "entries catalog-results";
+  els.playlistEntries.innerHTML = "";
+  if (matches.length) {
+    els.playlistEntries.appendChild(buildMatchBoard(matches));
+  }
+  if (titles.length) {
+    const gallery = document.createElement("div");
+    gallery.className = "series-gallery";
+    titles.forEach((group) => gallery.appendChild(createTitleGroupCard(group)));
+    els.playlistEntries.appendChild(gallery);
+  }
+  return Boolean(matches.length || titles.length);
+}
+
+function renderGroupedCatalog() {
+  const seriesKeys = new Set((allSeriesGroups || []).map((series) => series.series_key).filter(Boolean));
+  const matchEntries = [];
+  const otherEntries = [];
+  allEntries.forEach((entry) => {
+    if (entry.category === "series" && entry.series_key && seriesKeys.has(entry.series_key)) {
+      return;
+    }
+    if (parseFootballMatch(entry)) {
+      matchEntries.push(entry);
+      return;
+    }
+    otherEntries.push(entry);
+  });
+  const matches = groupFootballMatches(matchEntries);
+  const titles = groupCatalogTitles(otherEntries);
+  const totalCards = allSeriesGroups.length + matches.length + titles.length;
+  els.entryCount.textContent = `${totalCards} ${totalCards === 1 ? "título" : "títulos"}`;
+  els.loadMore.hidden = !hasMoreEntries;
+  els.playlistEntries.className = "entries catalog-results";
+  els.playlistEntries.innerHTML = "";
+  if (!totalCards) {
+    els.playlistEntries.className = "entries empty";
+    els.playlistEntries.textContent = "Nenhum stream encontrado nessa playlist.";
+    return;
+  }
+  const sportsOnly = matches.length && !allSeriesGroups.length && !titles.length;
+  if (matches.length) {
+    const board = buildMatchBoard(matches);
+    els.playlistEntries.appendChild(sportsOnly ? board : catalogSection("Jogos do dia", board));
+  }
+  if (allSeriesGroups.length || titles.length) {
+    const gallery = document.createElement("div");
+    gallery.className = "series-gallery";
+    allSeriesGroups.forEach((series) => gallery.appendChild(createSeriesTitleCard(series)));
+    titles.forEach((group) => gallery.appendChild(createTitleGroupCard(group)));
+    els.playlistEntries.appendChild(matches.length ? catalogSection("Títulos", gallery) : gallery);
+  }
+}
+
 function renderEntries() {
   updateQuickLinksVisibility();
+  updateCatalogHeading();
   if (!shouldShowPlaylistResults()) {
+    if (renderSportsBoardIfReady()) {
+      return;
+    }
     renderInitialCollapsedView();
     return;
   }
 
-  if (!selectedSeriesKey && allSeriesGroups.length && (selectedCategory === "series" || !allEntries.length)) {
-    renderSeriesGroups();
-    return;
-  }
   if (selectedCategory === "series" && selectedSeriesKey) {
     renderSeriesEpisodes();
+    return;
+  }
+  if (!selectedSeriesKey && selectedCategory === "series" && allSeriesGroups.length && !els.entrySearch.value.trim()) {
+    renderSeriesGroups();
     return;
   }
   if (selectedMovieCollectionOpen) {
     renderMovieCollectionEntries();
     return;
   }
-  if (shouldRenderMovieCollection()) {
-    renderMovieCollectionGroup();
+  if (allEntries.length || allSeriesGroups.length) {
+    renderGroupedCatalog();
     return;
   }
 
@@ -3180,7 +3191,7 @@ function createEntryElement(entry) {
   });
   const urlLine = entry.locked
     ? `<small class="locked-copy">Adquira um pacote para acessar este conteúdo</small>`
-    : `<small>${escapeHtml(entry.url)}</small>`;
+    : "";
   item.innerHTML = `
     ${logo}
     <span class="entry-body">
@@ -3338,51 +3349,7 @@ function renderSeriesGroups() {
   els.playlistEntries.innerHTML = "";
   const fragment = document.createDocumentFragment();
   groups.forEach((series) => {
-    const item = document.createElement("div");
-    item.className = "series-title-card";
-    item.setAttribute("role", "button");
-    item.tabIndex = 0;
-    const displayTitle = series.popular_title || series.title || "Serie";
-    const displaySeries = { ...series, title: displayTitle };
-    const favorite = seriesFavorite(displaySeries);
-    const logo = imageWithFallback({
-      className: "series-poster",
-      src: series.logo,
-      candidates: series.logo_candidates || [],
-      placeholder: `<div class="series-poster placeholder">${escapeHtml(displayTitle.slice(0, 1))}</div>`,
-    });
-    const seasons = (series.seasons || [])
-      .map((season) => {
-        return `<span class="series-season-pill">${escapeHtml(compactSeasonLabel(season.season))} - ${season.episode_count} ep.</span>`;
-      })
-      .join("");
-    item.innerHTML = `
-      <div class="series-poster-wrap">${logo}</div>
-      <div class="series-card-copy">
-        <strong>${escapeHtml(displayTitle)}</strong>
-        <small>${escapeHtml(series.group || "Sem grupo")}</small>
-        <small>${series.total_episodes || 0} episodio(s)</small>
-        <span class="series-season-list">${seasons}</span>
-      </div>
-      <button class="favorite-toggle card-favorite-toggle ${isFavorite(favorite) ? "active" : ""}" type="button" aria-label="Favoritar serie ${escapeHtml(displayTitle)}">${isFavorite(favorite) ? "★" : "☆"}</button>
-    `;
-    const openSeries = () => openSeriesGroup(displaySeries);
-    item.addEventListener("click", openSeries);
-    item.addEventListener("keydown", (event) => {
-      if (event.target.closest(".favorite-toggle")) {
-        return;
-      }
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openSeries();
-      }
-    });
-    item.querySelector(".favorite-toggle").addEventListener("click", (event) => {
-      event.stopPropagation();
-      toggleFavorite(favorite);
-    });
-    bindImageFallbacks(item);
-    fragment.appendChild(item);
+    fragment.appendChild(createSeriesTitleCard(series));
   });
   els.playlistEntries.appendChild(fragment);
 }
@@ -4063,14 +4030,6 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("focus", sendHeartbeat);
 
 els.statusModalClose.addEventListener("click", hideStatusModal);
-els.statusModalOpenExternal.addEventListener("click", () => {
-  if (launchPreparedExternalPlayer()) {
-    hideStatusModal();
-    return;
-  }
-  hideStatusModal();
-  openActiveStreamInExternalPlayer();
-});
 els.statusModalPlayBrowser.addEventListener("click", () => {
   const streamUrl = activeStreamId;
   if (!streamUrl) {
@@ -4079,30 +4038,9 @@ els.statusModalPlayBrowser.addEventListener("click", () => {
     return;
   }
   const entry = activeEntry || { title: "Link direto", url: streamUrl };
-  if (!browserPlaybackSupportedFor(inferMediaKind(streamUrl, entry))) {
-    showExternalPlayerModal(
-      "Use um player externo",
-      "O navegador do iPhone nao reproduz este formato ao vivo. Abra no player externo.",
-      { allowBrowser: false }
-    );
-    return;
-  }
   hideStatusModal();
   startStream(streamUrl, entry, { allowLiveBrowser: true }).catch(showStreamError);
 });
-if (els.resumeBrowserPlayback) {
-  els.resumeBrowserPlayback.addEventListener("click", () => {
-    const saved = activeStreamId ? { stream_id: activeStreamId, entry: activeEntry } : loadLastSelectedStream();
-    const streamUrl = saved?.stream_id || "";
-    if (!streamUrl) {
-      setStatus("Nenhum conteúdo recente para reproduzir.", "error");
-      return;
-    }
-    const entry = saved.entry || { title: "Link direto", url: streamUrl };
-    scrollPlayerIntoView();
-    startStream(streamUrl, entry, { allowLiveBrowser: true }).catch(showStreamError);
-  });
-}
 els.episodeModalClose.addEventListener("click", hideEpisodeOptionsModal);
 els.episodeModal.addEventListener("click", (event) => {
   if (event.target === els.episodeModal) {
@@ -4235,7 +4173,7 @@ els.categoryFilters.forEach((button) => {
       return;
     }
     if (isDailyGamesAwaitingSearch()) {
-      setStatus("Pesquise ou use um atalho para exibir esportes.");
+      setStatus("Jogos do dia.");
       renderInitialCollapsedView();
       loadDailyGameShortcuts();
       return;
@@ -4394,17 +4332,9 @@ els.stopStream.addEventListener("click", () => {
   stopActiveStream().then(() => setStatus("Stream parado.", "ok"));
 });
 
-els.openVlc.addEventListener("click", openActiveStreamInExternalPlayer);
-
 els.playbackMode.addEventListener("change", () => {
   logUserAction("Modo de reproducao alterado", { playback_mode: currentPlaybackMode() });
   setStatus(`Modo de reproducao: ${els.playbackMode.options[els.playbackMode.selectedIndex].text}.`, "ok");
-});
-
-els.externalPlayer.addEventListener("change", () => {
-  pendingExternalLaunch = null;
-  const playerLabel = EXTERNAL_PLAYER_LABELS[currentExternalPlayer()] || "player externo";
-  setStatusModalExternalButton(`Abrir ${playerLabel}`, false);
 });
 
 window.addEventListener("beforeunload", () => {
@@ -4427,7 +4357,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderWorldCupQuickLinks();
   renderSeriesStreamerLinks();
   bindWorldCupLogoFallback();
-  applyExternalPlayerRecommendation();
   try {
     await loadAppConfig();
     await waitForPreloadedPlaylistReady();

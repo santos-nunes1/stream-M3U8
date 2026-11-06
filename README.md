@@ -149,7 +149,7 @@ Esse filtro é aplicado no backend para a playlist pré-carregada e playlists ca
 - `direct`: o navegador acessa a origem do stream diretamente. Reduz o consumo de banda da VPS, mas pode falhar por CORS, User-Agent, bloqueio de origem ou formato incompatível.
 - `proxy`: usa o backend como proxy direto. Para MPEG-TS/live, o backend repassa a mídia e o player aplica pré-buffer e controle de atraso.
 
-O botão `Abrir player externo` usa o seletor ao lado para tentar abrir VLC ou Outplayer com uma URL temporária e tokenizada do backend. A URL original do stream não é enviada para o navegador nem baixada em playlist. Em celulares, a aplicação redireciona para a loja do app escolhido quando possível; no desktop, apenas tenta abrir o protocolo do player e informa caso o navegador não confirme a abertura.
+A reprodução acontece no player do navegador. O backend entrega o vídeo já compatível, por passthrough, remux ou conversão de áudio, sem abrir outro aplicativo.
 
 ## Playlist Pré-Carregada
 
@@ -255,7 +255,7 @@ Por padrão, o bot usa planos de 30 dias para 1 ou 2 telas. O e-mail informado p
 - `BOT_PUBLIC_BASE_URL`: URL pública HTTPS que aponta para o worker do bot.
 - `APP_PUBLIC_BASE_URL`: URL pública da aplicação enviada aos usuários nos links de acesso.
 - `PLANS_JSON`: lista JSON de planos vendidos pelo bot.
-- `VLC_PROXY_TOKEN_TTL_SECONDS`: validade dos tokens temporários usados pelo botão `Abrir player externo`. Padrão: `21600`.
+- `VLC_PROXY_TOKEN_TTL_SECONDS`: validade, em segundos, dos tokens temporários do proxy de mídia usado pelo player do navegador. Padrão: `21600`.
 - `STREAM_USER_AGENT`: User-Agent enviado às origens dos streams.
 - `STREAM_INSECURE_SSL`: permite ignorar validação SSL quando definido como `true`, `1`, `yes` ou `on`.
 - `STREAM_ENV`: defina como `production` para validar segredos fortes no startup.
