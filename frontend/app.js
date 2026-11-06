@@ -86,7 +86,7 @@ let selectedSeriesSeasons = [];
 let selectedSeriesSeason = "";
 let selectedMovieCollectionOpen = false;
 let selectedMovieCollectionTitle = "";
-let selectedCategory = "";
+let selectedCategory = "daily_games";
 let categoryInteracted = false;
 let dailyGamesCatalogRequested = false;
 let dailyGameShortcutEntries = [];
@@ -1686,14 +1686,17 @@ async function loadSavedPlaylistOnStartup() {
   startupPlaylistLoadPromise = (async () => {
     try {
       hideHubLoading();
-      renderInitialCollapsedView();
-      setStatus("Carregando catalogo em segundo plano. Pesquise um titulo em instantes.", "ok");
+      selectDailyGamesCategory();
+      renderDailyGamesLoading();
+      setStatus("Carregando jogos do dia.", "ok");
       playlistPayload = {};
       playlistEndpoint = "/api/playlist/preloaded";
-      const data = await loadPreloadedPlaylistPage(currentPlaylistFilters({ limit: PAGE_SIZE, offset: 0 }), { showOverlay: false });
+      const data = await loadPreloadedPlaylistPage(
+        { ...currentPlaylistFilters({ limit: PAGE_SIZE, offset: 0 }), category: "all" },
+        { showOverlay: false }
+      );
       applyPlaylistData(data);
-      renderInitialCollapsedView();
-      setStatus("Digite um titulo para buscar no catalogo.", "ok");
+      setStatus("Jogos do dia.", "ok");
       hideHubLoading();
       hideStatusModal();
     } catch (error) {
@@ -2448,6 +2451,9 @@ async function loadDailyGameShortcuts() {
     await dailyGameShortcutLoadPromise;
   } catch (error) {
     console.warn("[Stream M3U8] Nao foi possivel carregar atalhos de futebol", error);
+    if ((selectedCategory === "daily_games" || selectedCategory === "world_cup") && !dailyGameShortcutEntries.length) {
+      renderDailyGamesEmpty();
+    }
   } finally {
     dailyGameShortcutLoadPromise = null;
   }
@@ -2620,6 +2626,33 @@ function isTvAwaitingSearch() {
 
 function isDailyGamesAwaitingSearch() {
   return selectedCategory === "daily_games" && !els.entrySearch.value.trim() && !dailyGamesCatalogRequested;
+}
+
+function selectDailyGamesCategory() {
+  selectedCategory = "daily_games";
+  els.categoryFilters.forEach((filter) => filter.classList.toggle("active", filter.dataset.category === "daily_games"));
+  updateQuickLinksVisibility();
+  updateCatalogHeading();
+}
+
+function renderDailyGamesLoading() {
+  els.entryCount.textContent = "Jogos do dia";
+  els.loadMore.hidden = true;
+  els.playlistEntries.className = "entries loading";
+  els.playlistEntries.innerHTML = `
+    <div class="inline-loader" role="status" aria-live="polite">
+      <span class="inline-spinner" aria-hidden="true"></span>
+      <span>Carregando jogos do dia...</span>
+    </div>
+  `;
+  loadDailyGameShortcuts();
+}
+
+function renderDailyGamesEmpty() {
+  els.entryCount.textContent = "Jogos do dia";
+  els.loadMore.hidden = true;
+  els.playlistEntries.className = "entries empty";
+  els.playlistEntries.textContent = "Nenhum jogo encontrado para hoje.";
 }
 
 function isRealityAwaitingSelection() {
@@ -2847,29 +2880,26 @@ function openGroupedItem(entries, title) {
 
 function createSeriesTitleCard(series) {
   const item = document.createElement("div");
-  item.className = "series-title-card";
+  item.className = "catalog-row";
   item.setAttribute("role", "button");
   item.tabIndex = 0;
   const displayTitle = series.popular_title || series.title || "Serie";
   const displaySeries = { ...series, title: displayTitle };
   const favorite = seriesFavorite(displaySeries);
   const logo = imageWithFallback({
-    className: "series-poster",
+    className: "catalog-row-logo",
     src: series.logo,
     candidates: series.logo_candidates || [],
-    placeholder: `<div class="series-poster placeholder">${escapeHtml(displayTitle.slice(0, 1))}</div>`,
+    placeholder: `<div class="catalog-row-logo placeholder">${escapeHtml(displayTitle.slice(0, 1))}</div>`,
   });
-  const seasons = (series.seasons || [])
-    .map((season) => `<span class="series-season-pill">${escapeHtml(compactSeasonLabel(season.season))} - ${season.episode_count} ep.</span>`)
-    .join("");
+  const episodeCount = series.total_episodes || 0;
+  const meta = `${episodeCount} ${episodeCount === 1 ? "episódio" : "episódios"} · ${series.group || "Sem grupo"}`;
   item.innerHTML = `
-    <div class="series-poster-wrap">${logo}</div>
-    <div class="series-card-copy">
+    ${logo}
+    <span class="catalog-row-copy">
       <strong>${escapeHtml(displayTitle)}</strong>
-      <small>${escapeHtml(series.group || "Sem grupo")}</small>
-      <small>${series.total_episodes || 0} episodio(s)</small>
-      <span class="series-season-list">${seasons}</span>
-    </div>
+      <small>${escapeHtml(meta)}</small>
+    </span>
     <button class="favorite-toggle card-favorite-toggle ${isFavorite(favorite) ? "active" : ""}" type="button" aria-label="Favoritar serie ${escapeHtml(displayTitle)}">${isFavorite(favorite) ? "★" : "☆"}</button>
   `;
   const openSeries = () => openSeriesGroup(displaySeries);
@@ -2893,25 +2923,25 @@ function createSeriesTitleCard(series) {
 
 function createTitleGroupCard(group) {
   const item = document.createElement("div");
-  item.className = "series-title-card";
+  item.className = "catalog-row";
   item.setAttribute("role", "button");
   item.tabIndex = 0;
   const poster = coalesceCover(group.entries, group.title);
   const logo = imageWithFallback({
-    className: "series-poster",
+    className: "catalog-row-logo",
     src: poster,
     candidates: coverCandidates(group.entries, poster, group.title),
-    placeholder: `<div class="series-poster placeholder">${escapeHtml(group.title.slice(0, 1))}</div>`,
-    alt: group.title,
+    placeholder: `<div class="catalog-row-logo placeholder">${escapeHtml((group.title || "?").slice(0, 1))}</div>`,
+    alt: "",
   });
   const countLabel = group.entries.length > 1 ? `${group.entries.length} opções` : categoryLabel(group.category);
+  const meta = `${countLabel} · ${group.entries[0]?.group || categoryLabel(group.category)}`;
   item.innerHTML = `
-    <div class="series-poster-wrap">${logo}</div>
-    <div class="series-card-copy">
+    ${logo}
+    <span class="catalog-row-copy">
       <strong>${escapeHtml(group.title)}</strong>
-      <small>${escapeHtml(countLabel)}</small>
-      <small>${escapeHtml(group.entries[0]?.group || categoryLabel(group.category))}</small>
-    </div>
+      <small>${escapeHtml(meta)}</small>
+    </span>
   `;
   const openGroup = () => openGroupedItem(group.entries, group.title);
   item.addEventListener("click", openGroup);
@@ -2976,7 +3006,7 @@ function renderSportsBoardIfReady() {
   }
   if (titles.length) {
     const gallery = document.createElement("div");
-    gallery.className = "series-gallery";
+    gallery.className = "catalog-list";
     titles.forEach((group) => gallery.appendChild(createTitleGroupCard(group)));
     els.playlistEntries.appendChild(gallery);
   }
@@ -3016,7 +3046,7 @@ function renderGroupedCatalog() {
   }
   if (allSeriesGroups.length || titles.length) {
     const gallery = document.createElement("div");
-    gallery.className = "series-gallery";
+    gallery.className = "catalog-list";
     allSeriesGroups.forEach((series) => gallery.appendChild(createSeriesTitleCard(series)));
     titles.forEach((group) => gallery.appendChild(createTitleGroupCard(group)));
     els.playlistEntries.appendChild(matches.length ? catalogSection("Títulos", gallery) : gallery);
@@ -3028,6 +3058,14 @@ function renderEntries() {
   updateCatalogHeading();
   if (!shouldShowPlaylistResults()) {
     if (renderSportsBoardIfReady()) {
+      return;
+    }
+    if (selectedCategory === "daily_games" && !els.entrySearch.value.trim()) {
+      if (!dailyGameShortcutCacheKey) {
+        renderDailyGamesLoading();
+        return;
+      }
+      renderDailyGamesEmpty();
       return;
     }
     renderInitialCollapsedView();
@@ -3345,7 +3383,7 @@ function renderSeriesGroups() {
     return;
   }
 
-  els.playlistEntries.className = "entries series-gallery";
+  els.playlistEntries.className = "entries catalog-list";
   els.playlistEntries.innerHTML = "";
   const fragment = document.createDocumentFragment();
   groups.forEach((series) => {
@@ -3439,12 +3477,11 @@ function renderSeriesEpisodes() {
     placeholder: `<div class="series-detail-thumb placeholder">${escapeHtml((selectedSeriesTitle || "?").slice(0, 1))}</div>`,
     alt: selectedSeriesTitle || "Serie",
   });
-  const seasonButtons = selectedSeriesSeasons
+  const seasonOptions = (selectedSeriesSeasons.length ? selectedSeriesSeasons : [{ season: activeSeason, episode_count: entries.length }])
     .map((season) => `
-      <button class="season-tab ${String(season.season) === String(activeSeason) ? "active" : ""}" type="button" data-season="${escapeHtml(season.season)}">
-        ${escapeHtml(seasonLabel(season.season))}
-        <span>${season.episode_count} ep.</span>
-      </button>
+      <option value="${escapeHtml(season.season)}" ${String(season.season) === String(activeSeason) ? "selected" : ""}>
+        ${escapeHtml(seasonLabel(season.season))} · ${season.episode_count || entries.length} episódios
+      </option>
     `)
     .join("");
 
@@ -3461,10 +3498,13 @@ function renderSeriesEpisodes() {
         </div>
         <div class="series-detail-title">
           <strong>${escapeHtml(selectedSeriesTitle || "Serie")}</strong>
-          <small>${escapeHtml(selectedSeriesGroupName || "Catalogo de series")} - ${selectedSeriesSeasons.length || 1} temporada(s)</small>
+          <small>${escapeHtml(selectedSeriesGroupName || "Catalogo de series")} · ${selectedSeriesSeasons.length || 1} ${(selectedSeriesSeasons.length || 1) === 1 ? "temporada" : "temporadas"}</small>
         </div>
       </div>
-      <div class="season-tabs" aria-label="Temporadas">${seasonButtons}</div>
+      <label class="season-picker">
+        <span>Episódios</span>
+        <select aria-label="Temporada">${seasonOptions}</select>
+      </label>
     </section>
     <section class="episode-list"></section>
   `;
@@ -3477,13 +3517,14 @@ function renderSeriesEpisodes() {
     toggleFavorite(favorite);
   });
   bindImageFallbacks(els.playlistEntries);
-  els.playlistEntries.querySelectorAll(".season-tab").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectedSeriesSeason = button.dataset.season || "";
-      setPlaylistLoading(`Carregando ${seasonLabel(selectedSeriesSeason)}...`);
+  const seasonPicker = els.playlistEntries.querySelector(".season-picker select");
+  if (seasonPicker) {
+    seasonPicker.addEventListener("change", () => {
+      selectedSeriesSeason = seasonPicker.value || "";
+      setStatus(`Carregando ${seasonLabel(selectedSeriesSeason)}...`);
       loadSelectedSeriesSeason().catch((error) => setStatus(error.message, "error"));
     });
-  });
+  }
 
   const episodeList = els.playlistEntries.querySelector(".episode-list");
   if (!entries.length) {
@@ -3491,7 +3532,7 @@ function renderSeriesEpisodes() {
     episodeList.textContent = "Nenhum episodio encontrado nessa temporada.";
     return;
   }
-  episodeList.className = "episode-list compact";
+  episodeList.className = "episode-list netflix";
   groupedSeriesEpisodes(entries).forEach((episode) => {
     episodeList.appendChild(createSeriesEpisodeButton(episode));
   });
@@ -3884,25 +3925,70 @@ function toggleEpisodeWatched(episode) {
   renderSeriesEpisodes();
 }
 
+function episodeDisplayTitle(episode) {
+  const seriesName = String(selectedSeriesTitle || "").trim();
+  const raw = String(episode?.title || episode?.variants?.[0]?.episode_title || episode?.variants?.[0]?.title || "");
+  const cleaned = raw
+    .replace(seriesName ? new RegExp(seriesName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig") : /$^/, " ")
+    .replace(/\bS\d{1,2}\s*E\d{1,3}\b/ig, " ")
+    .replace(/\bT\d{1,2}\s*E\d{1,3}\b/ig, " ")
+    .replace(/\(\d{4}\)/g, " ")
+    .replace(/^[\s\-–:|]+|[\s\-–:|]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || `Episódio ${Number(episode?.episode) || ""}`.trim();
+}
+
+function episodeVariantSummary(episode) {
+  const pieces = [episodeCode(episode)];
+  pieces.push(isEpisodePlayable(episode) ? "Disponível" : "Bloqueado");
+  if (isEpisodeWatched(episode)) {
+    pieces.push("Assistido");
+  }
+  if ((episode.variants || []).length > 1) {
+    pieces.push(`${episode.variants.length} opções`);
+  }
+  return pieces.join(" · ");
+}
+
 function createSeriesEpisodeButton(episode) {
   const item = document.createElement("button");
   const playable = isEpisodePlayable(episode);
+  const watched = isEpisodeWatched(episode);
+  const playing = activeSeriesPlayback
+    && seriesEpisodeIdentity(activeSeriesPlayback.season, activeSeriesPlayback.episode) === seriesEpisodeIdentity(episode.season, episode.episode);
   item.className = [
-    "episode-button",
+    "episode-row",
     playable ? "episode-unlocked" : "episode-locked",
-    isEpisodeWatched(episode) ? "watched" : "",
+    watched ? "watched" : "",
+    playing ? "playing" : "",
   ].filter(Boolean).join(" ");
   item.type = "button";
-  const firstEntry = episode.variants[0];
+  const firstEntry = episode.variants[0] || {};
+  const thumb = imageWithFallback({
+    className: "episode-still",
+    src: firstEntry.logo || selectedSeriesLogo,
+    candidates: firstEntry.logo_candidates || selectedSeriesLogoCandidates,
+    placeholder: `<span class="episode-still placeholder">${escapeHtml(String(episode.episode || ""))}</span>`,
+    alt: "",
+  });
   item.innerHTML = `
-    <span>${episodeCode(episode)}</span>
-    <small>${playable ? "Liberado" : "Bloqueado"}</small>
-    ${isEpisodeWatched(episode) ? "<small>Assistido</small>" : ""}
+    <span class="episode-index">${escapeHtml(String(Number(episode.episode) || ""))}</span>
+    <span class="episode-still-wrap">
+      ${thumb}
+      <span class="episode-play" aria-hidden="true"></span>
+      ${watched ? '<span class="episode-progress"></span>' : ""}
+    </span>
+    <span class="episode-row-copy">
+      <strong>${escapeHtml(episodeDisplayTitle(episode))}</strong>
+      <small>${escapeHtml(episodeVariantSummary(episode))}</small>
+    </span>
   `;
-  item.title = `${episode.title || firstEntry.title || firstEntry.url} - ${episode.variants.length} opcao(oes)`;
+  item.title = `${episodeDisplayTitle(episode)} — ${episode.variants.length} opção(ões)`;
   item.addEventListener("click", () => {
     showEpisodeOptionsModal(episode);
   });
+  bindImageFallbacks(item);
   return item;
 }
 
@@ -4088,9 +4174,9 @@ els.entrySearch.addEventListener("input", () => {
       loadRealityShortcuts();
       return;
     }
-    if (isDailyGamesAwaitingSearch()) {
-      setStatus("Pesquise ou use um atalho para exibir esportes.");
-      renderInitialCollapsedView();
+    if (selectedCategory === "daily_games") {
+      setStatus("Jogos do dia.", "ok");
+      renderEntries();
       return;
     }
     if (selectedCategory === "world_cup") {
@@ -4172,10 +4258,9 @@ els.categoryFilters.forEach((button) => {
       loadRealityShortcuts();
       return;
     }
-    if (isDailyGamesAwaitingSearch()) {
-      setStatus("Jogos do dia.");
-      renderInitialCollapsedView();
-      loadDailyGameShortcuts();
+    if (selectedCategory === "daily_games") {
+      setStatus("Jogos do dia.", "ok");
+      renderEntries();
       return;
     }
     setStatus(selectedCategory === "series"

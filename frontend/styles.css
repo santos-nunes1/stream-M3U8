@@ -1865,6 +1865,163 @@ img.now-playing-logo {
   color: #fca5a5;
 }
 
+.season-picker {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding-top: 0.15rem;
+}
+
+.season-picker span {
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.season-picker select {
+  appearance: none;
+  background-color: rgba(255, 255, 255, 0.06);
+  background-image: linear-gradient(45deg, transparent 50%, #fff 50%), linear-gradient(135deg, #fff 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px, 5px 5px;
+  border: 0;
+  border-radius: 0.35rem;
+  color: white;
+  color-scheme: dark;
+  font: inherit;
+  font-weight: 750;
+  max-width: min(100%, 320px);
+  padding: 0.55rem 1.8rem 0.55rem 0.75rem;
+}
+
+.episode-list.netflix {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: min(68vh, 760px);
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.episode-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0;
+  color: var(--text);
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: 2rem 168px minmax(0, 1fr);
+  padding: 0.85rem 0.15rem;
+  text-align: left;
+  width: 100%;
+}
+
+.episode-row:hover,
+.episode-row:focus-visible {
+  background: rgba(255, 255, 255, 0.04);
+  outline: none;
+}
+
+.episode-row.playing {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.episode-row.episode-locked {
+  color: #fecaca;
+}
+
+.episode-index {
+  color: #d4d4d8;
+  font-size: 1.35rem;
+  font-weight: 500;
+  text-align: center;
+}
+
+.episode-still-wrap {
+  aspect-ratio: 16 / 9;
+  background: #18181b;
+  border-radius: 0.35rem;
+  display: block;
+  overflow: hidden;
+  position: relative;
+}
+
+.episode-still,
+.episode-still-wrap img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.episode-still.placeholder {
+  align-items: center;
+  color: rgba(255, 255, 255, 0.72);
+  display: grid;
+  font-size: 1.2rem;
+  font-weight: 750;
+  height: 100%;
+  place-items: center;
+}
+
+.episode-play {
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  height: 2.35rem;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2.35rem;
+}
+
+.episode-play::before {
+  border-color: transparent transparent transparent white;
+  border-style: solid;
+  border-width: 0.42rem 0 0.42rem 0.68rem;
+  content: "";
+  left: 0.9rem;
+  position: absolute;
+  top: 0.66rem;
+}
+
+.episode-progress {
+  background: #e50914;
+  bottom: 0;
+  height: 3px;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.episode-row-copy {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.episode-row-copy strong {
+  display: -webkit-box;
+  font-size: 0.98rem;
+  font-weight: 700;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.3;
+  overflow: hidden;
+}
+
+.episode-row-copy small {
+  color: #a1a1aa;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+
+.episode-row.watched .episode-row-copy small {
+  color: #d4d4d8;
+}
+
 .episode-card {
   align-items: center;
   background: rgba(12, 17, 29, 0.72);
@@ -2972,6 +3129,17 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .season-picker {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .episode-row {
+    gap: 0.65rem;
+    grid-template-columns: 1.6rem 104px minmax(0, 1fr);
+  }
+
   .series-detail-poster {
     max-width: 150px;
   }
@@ -3000,10 +3168,75 @@ textarea:focus {
   gap: 1rem;
 }
 
-.entries.catalog-results .series-gallery {
+.entries.catalog-results .series-gallery,
+.entries.catalog-results .catalog-list {
   align-content: start;
   flex: 0 0 auto;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 180px));
+  width: 100%;
+}
+
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+
+.catalog-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0;
+  cursor: pointer;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 0.5rem 0.15rem;
+  text-align: left;
+}
+
+.catalog-row:hover,
+.catalog-row:focus-visible {
+  background: rgba(255, 255, 255, 0.045);
+  outline: none;
+}
+
+.catalog-row-logo {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 0.45rem;
+  color: #f7c15c;
+  display: grid;
+  font-size: 1rem;
+  font-weight: 800;
+  height: 46px;
+  object-fit: cover;
+  place-items: center;
+  width: 46px;
+}
+
+.catalog-row-copy {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.catalog-row-copy strong,
+.catalog-row-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-row-copy small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.catalog-row .card-favorite-toggle {
+  box-shadow: none;
+  position: static;
 }
 
 .catalog-section {

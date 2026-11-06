@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Stream Hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="stylesheet" href="/styles.css?v=20261106-catalog-layout2" />
+    <link rel="stylesheet" href="/styles.css?v=20261106-catalog-list" />
   </head>
   <body data-auth-state="booting">
     <main class="app">
@@ -81,14 +81,14 @@
         <div class="section-title">
           <div>
             <span class="section-kicker">Escolha o conteúdo</span>
-            <h2 id="catalog-heading">Catálogo</h2>
+            <h2 id="catalog-heading">Jogos do dia</h2>
           </div>
           <div class="section-actions">
             <span id="entry-count">0 itens</span>
           </div>
         </div>
         <div class="filters" aria-label="Filtros de categoria">
-          <button class="filter" data-category="daily_games" type="button">Esportes</button>
+          <button class="filter active" data-category="daily_games" type="button">Esportes</button>
           <button class="filter" data-category="tv" type="button">TV</button>
           <button class="filter" data-category="reality" type="button">Reality</button>
           <button class="filter" data-category="movies" type="button">Filmes</button>
@@ -209,6 +209,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.7"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
-    <script src="/app.js?v=20261106-input-retry"></script>
+    <script src="/app.js?v=20261106-catalog-list"></script>
   </body>
 </html>
