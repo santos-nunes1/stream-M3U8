@@ -35,6 +35,7 @@ from backend.stream_service import (
     StreamOfflineError,
     browser_stream_is_vod,
     choose_browser_delivery,
+    is_extensionless_live_stream,
     extract_series_metadata,
     parse_playlist_entries,
     parse_playlist_entries_from_lines,
@@ -45,7 +46,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DEFAULT_PRELOADED_PLAYLIST_PATH = PROJECT_ROOT / "data" / "preloaded_playlist.m3u"
 SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
-PLAYLIST_CATALOG_CACHE_VERSION = 18
+PLAYLIST_CATALOG_CACHE_VERSION = 19
 SEARCH_PREFIX_MIN_LENGTH = 2
 SEARCH_PREFIX_MAX_LENGTH = 8
 ADMIN_USER_ID = "__admin__"
@@ -4112,7 +4113,7 @@ def _ffmpeg_vod_mp4_command(source_url: str, profile: str) -> List[str]:
     if profile == "remux":
         command.extend(["-c:a", "copy"])
         source_path = urllib.parse.urlsplit(source_url).path.lower()
-        if source_path.endswith(".ts") or "/live/" in source_path:
+        if source_path.endswith(".ts") or "/live/" in source_path or is_extensionless_live_stream(source_path):
             command.extend(["-bsf:a", "aac_adtstoasc"])
     else:
         command.extend(["-c:a", "aac", "-ac", "2", "-b:a", "160k"])
@@ -4195,7 +4196,7 @@ def _ffmpeg_hls_command(source_url: str, session_dir: Path, playlist_path: Path,
     if profile == "remux":
         command.extend(["-c:a", "copy"])
         source_path = urllib.parse.urlsplit(source_url).path.lower()
-        if source_path.endswith(".ts") or "/live/" in source_path:
+        if source_path.endswith(".ts") or "/live/" in source_path or is_extensionless_live_stream(source_path):
             command.extend(["-bsf:a", "aac_adtstoasc"])
     else:
         command.extend(["-c:a", "aac", "-ac", "2", "-b:a", "160k"])
@@ -4293,7 +4294,12 @@ class StreamApplicationServer(ThreadingHTTPServer):
         generation = self._bump_stream_generation(stream_id, user_id, session_id)
         self._kill_transmux_stream(stream_id, user_id, session_id)
         source_path = urllib.parse.urlsplit(source_url).path.lower()
-        live_ts = media_kind == "mpegts" or source_path.endswith(".ts") or "/live/" in source_path
+        live_ts = (
+            media_kind == "mpegts"
+            or source_path.endswith(".ts")
+            or "/live/" in source_path
+            or is_extensionless_live_stream(source_path)
+        )
         probed: Dict[str, object] = {}
         if force_delivery == "transcode":
             delivery = "transcode"

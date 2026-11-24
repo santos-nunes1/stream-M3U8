@@ -631,6 +631,22 @@ _BROWSER_H264 = {"h264", "avc", "avc1"}
 _BROWSER_AAC = {"aac", "mp4a"}
 
 
+def is_extensionless_live_stream(url_or_path: str) -> bool:
+    """Xtream live channels are often /user/pass/12345, with no file suffix.
+
+    The bytes are MPEG-TS. Movies and episodes keep /movie/ or /series/ in the path.
+    """
+    value = (url_or_path or "").strip()
+    if "://" in value:
+        path = urllib.parse.urlsplit(value).path.lower()
+    else:
+        path = value.lower().split("?", 1)[0]
+    if "/movie/" in path or "/series/" in path:
+        return False
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    return bool(name) and "." not in name and name.isdigit()
+
+
 def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str) -> str:
     """How the web player should receive this source.
 
@@ -644,7 +660,7 @@ def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str)
     path = urllib.parse.urlsplit(source_url).path.lower()
     h264 = video in _BROWSER_H264
     aac = audio in _BROWSER_AAC or audio == ""
-    mpegts = path.endswith(".ts") or "/live/" in path
+    mpegts = path.endswith(".ts") or "/live/" in path or is_extensionless_live_stream(path)
     hls = path.endswith((".m3u8", ".m3u"))
     browser_file = path.endswith((".mp4", ".m4v", ".mov", ".webm")) or (
         "/movie/" in path and not path.endswith((".mkv", ".avi", ".ts", ".m3u8", ".m3u"))
@@ -680,7 +696,7 @@ def choose_browser_delivery(source_url: str, video_codec: str, audio_codec: str)
 
 def browser_stream_is_vod(source_url: str, duration_seconds: Optional[float]) -> bool:
     path = urllib.parse.urlsplit(source_url).path.lower()
-    if "/live/" in path or path.endswith(".ts"):
+    if "/live/" in path or path.endswith(".ts") or is_extensionless_live_stream(path):
         return False
     if path.endswith((".mp4", ".mkv", ".m4v", ".avi", ".mov", ".webm")) or "/movie/" in path or "/series/" in path:
         return True
@@ -694,7 +710,7 @@ def classify_media_kind(url: str, fallback_type: str) -> str:
     path = value.split("?", 1)[0]
     if path.endswith((".m3u", ".m3u8")) or fallback_type in {"variant", "playlist"}:
         return "hls"
-    if path.endswith(".ts") or "/live/" in path:
+    if path.endswith(".ts") or "/live/" in path or is_extensionless_live_stream(path):
         return "mpegts"
     if path.endswith((".mp4", ".m4v", ".mov", ".webm")) or "/movie/" in path:
         return "native"

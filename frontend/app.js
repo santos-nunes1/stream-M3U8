@@ -1151,17 +1151,27 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function inferMediaKind(streamId, entry = null) {
-  if (entry?.media_kind) {
-    return entry.media_kind;
+function isExtensionlessLiveStream(streamId) {
+  const path = String(streamId || "").toLowerCase().split("?", 1)[0];
+  if (path.includes("/movie/") || path.includes("/series/")) {
+    return false;
   }
+  const name = path.split("/").filter(Boolean).pop() || "";
+  return /^\d+$/.test(name);
+}
 
-  const path = streamId.toLowerCase().split("?", 1)[0];
+function inferMediaKind(streamId, entry = null) {
+  const path = String(streamId || "").toLowerCase().split("?", 1)[0];
   if (path.endsWith(".m3u") || path.endsWith(".m3u8")) {
     return "hls";
   }
-  if (path.endsWith(".ts") || path.includes("/live/")) {
+  // A numeric id with no suffix is a live MPEG-TS channel on this playlist.
+  // Trust the URL over a stale catalog label, or the browser tries direct mode and never starts.
+  if (path.endsWith(".ts") || path.includes("/live/") || isExtensionlessLiveStream(streamId)) {
     return "mpegts";
+  }
+  if (entry?.media_kind) {
+    return entry.media_kind;
   }
   return "native";
 }
@@ -1287,7 +1297,7 @@ async function startProxyStream(streamId, entry, token, reason = "", forceDelive
       title: entry?.title || "Link direto",
       group: entry?.group || "",
       category: entry?.category || "",
-      media_kind: entry?.media_kind || "",
+      media_kind: inferMediaKind(streamId, entry),
       client: "browser",
       force_delivery: forceDelivery || "",
     });
