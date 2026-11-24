@@ -243,6 +243,42 @@ function hidePlaybackLoading() {
   }
 }
 
+let restoredStartPromise = null;
+
+function playerHasMedia() {
+  return Boolean(hls || mpegtsPlayer || els.video.getAttribute("src") || els.video.currentSrc);
+}
+
+function startRestoredPlayback() {
+  if (!activeStreamId || playerHasMedia() || restoredStartPromise) {
+    return;
+  }
+  const streamId = activeStreamId;
+  const entry = activeEntry || { title: "Link direto", url: streamId };
+  restoredStartPromise = startStream(streamId, entry)
+    .catch(showStreamError)
+    .finally(() => {
+      restoredStartPromise = null;
+    });
+}
+
+function bindRestoredPlayback() {
+  if (!els.video || els.video.dataset.restoreWatch === "1") {
+    return;
+  }
+  els.video.dataset.restoreWatch = "1";
+  els.video.addEventListener("play", () => {
+    if (playerHasMedia()) {
+      return;
+    }
+    els.video.pause();
+    startRestoredPlayback();
+  });
+  els.video.addEventListener("click", () => {
+    startRestoredPlayback();
+  });
+}
+
 function watchPlaybackLoading() {
   if (!els.video || els.video.dataset.loadingWatch === "1") {
     return;
@@ -2675,6 +2711,15 @@ function teamMark(name) {
   return (source.slice(0, 3) || "?").toLocaleUpperCase("pt-BR");
 }
 
+function stripMatchNoise(value) {
+  return String(value || "")
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, " ")
+    .replace(/\b(?:fhd|uhd|hd|sd|4k|1080p|720p|480p|h265|hevc|hdr)\b/gi, " ")
+    .replace(/[⏰•|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function parseFootballMatch(entry) {
   if (!entry || entry.category === "movies" || entry.category === "series") {
     return null;
@@ -2694,15 +2739,8 @@ function parseFootballMatch(entry) {
     return null;
   }
   const time = `${timeMatch[1].padStart(2, "0")}:${timeMatch[2]}`;
-  const pieces = title.split(/[•|]/).map((piece) => piece.trim()).filter(Boolean);
-  const teamPiece = pieces.find((piece) => /\s(?:x|vs\.?|versus)\s/iu.test(piece)) || title;
-  const withoutTime = teamPiece
-    .replace(/\(\d+\)/g, " ")
-    .replace(timeMatch[0], " ")
-    .replace(/[⏰]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const teams = withoutTime.match(/^(.+?)\s+(?:x|vs\.?|versus)\s+(.+?)$/iu);
+  const withoutTime = stripMatchNoise(title).replace(time, " ").replace(/\s+/g, " ").trim();
+  const teams = withoutTime.match(/^(.+?)\s+(?:x|vs\.?|versus)\s+(.+)$/iu);
   if (!teams) {
     return null;
   }
@@ -2712,12 +2750,13 @@ function parseFootballMatch(entry) {
     return null;
   }
   const competition = String(group || "").replace(/[^\p{L}\p{N}\s|:-]+/gu, " ").replace(/\s+/g, " ").trim();
+  const pair = [normalizeCatalogText(home), normalizeCatalogText(away)].sort();
   return {
     time,
     home,
     away,
     competition: !competition || /jogos d[oe] (dia|hoje)/i.test(competition) ? "Hoje" : competition,
-    key: `${time}|${normalizeCatalogText(home)}|${normalizeCatalogText(away)}`,
+    key: `${time}|${pair[0]}|${pair[1]}`,
   };
 }
 
@@ -2731,6 +2770,9 @@ function groupFootballMatches(entries) {
     const existing = groups.get(match.key);
     if (!existing) {
       groups.set(match.key, { ...match, entries: [entry] });
+      return;
+    }
+    if (existing.entries.some((item) => item.url && item.url === entry.url)) {
       return;
     }
     existing.entries.push(entry);
@@ -4382,6 +4424,7 @@ window.addEventListener("beforeunload", () => {
 
 document.addEventListener("DOMContentLoaded", async () => {
   showHubLoading();
+  bindRestoredPlayback();
   startClock();
   renderTvQuickLinks();
   renderDailyGameQuickLinks();
