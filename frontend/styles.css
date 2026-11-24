@@ -2220,18 +2220,6 @@ img.entry-logo {
   color: rgba(204, 251, 241, 0.88);
 }
 
-.playback-mode-label {
-  align-items: center;
-  color: #b9c6d8;
-  display: flex;
-  font-size: 0.85rem;
-  gap: 0.5rem;
-}
-
-.playback-mode-label select {
-  min-width: 110px;
-}
-
 .proxy-url {
   color: #b9c6d8;
   margin-top: 0.85rem;
@@ -2580,7 +2568,6 @@ img.entry-logo {
 .section-actions span,
 .now-playing small,
 .entry small,
-.playback-mode-label,
 .status,
 .proxy-url {
   color: var(--muted);
@@ -2760,8 +2747,7 @@ img.entry-logo {
 
   .player-actions > *,
   .section-actions > *,
-  .section-actions button,
-  .playback-mode-label select {
+  .section-actions button {
     width: 100%;
   }
 
@@ -3069,8 +3055,6 @@ textarea:focus {
   }
 
   .group-filter-shell select,
-  .playback-mode-label,
-  .playback-mode-label select,
   .player-actions > *,
   .section-actions,
   .section-actions > *,
