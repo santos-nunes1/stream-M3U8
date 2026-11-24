@@ -244,17 +244,29 @@ function hidePlaybackLoading() {
 }
 
 let restoredStartPromise = null;
+let resumeStreamId = "";
+let resumeEntry = null;
+let stopInFlight = Promise.resolve();
 
 function playerHasMedia() {
-  return Boolean(hls || mpegtsPlayer || els.video.getAttribute("src") || els.video.currentSrc);
+  return Boolean(hls || mpegtsPlayer || els.video.getAttribute("src"));
+}
+
+function rememberResumeTarget(streamId, entry = null) {
+  if (!streamId) {
+    return;
+  }
+  resumeStreamId = streamId;
+  resumeEntry = entry || resumeEntry || { title: "Link direto", url: streamId };
 }
 
 function startRestoredPlayback() {
-  if (!activeStreamId || playerHasMedia() || restoredStartPromise) {
+  const streamId = activeStreamId || resumeStreamId;
+  if (!streamId || playerHasMedia() || restoredStartPromise) {
     return;
   }
-  const streamId = activeStreamId;
-  const entry = activeEntry || { title: "Link direto", url: streamId };
+  const entry = activeEntry || resumeEntry || { title: "Link direto", url: streamId };
+  showPlaybackLoading(isSeriesPlayback(streamId, entry) ? "Preparando o episódio..." : "Preparando o vídeo...");
   restoredStartPromise = startStream(streamId, entry)
     .catch(showStreamError)
     .finally(() => {
@@ -288,9 +300,10 @@ function watchPlaybackLoading() {
   els.video.addEventListener("waiting", () => {
     clearTimeout(playbackWaitTimer);
     playbackWaitTimer = setTimeout(() => {
-      if (els.video.readyState < 3 && !els.playbackLoading?.classList.contains("is-error")) {
-        showPlaybackLoading("Carregando o vídeo...");
+      if (!playerHasMedia() || els.video.readyState >= 3 || els.playbackLoading?.classList.contains("is-error")) {
+        return;
       }
+      showPlaybackLoading("Carregando o vídeo...");
     }, 400);
   });
 }
@@ -951,6 +964,7 @@ function persistLastSelectedStream(streamId, entry = null) {
   if (!streamId) {
     return;
   }
+  rememberResumeTarget(streamId, entry);
   const payload = {
     stream_id: streamId,
     entry: entry || { title: "Link direto", url: streamId },
@@ -1285,7 +1299,11 @@ async function startProxyStream(streamId, entry, token, forceDelivery = "") {
     if (preparingStreamId === streamId) {
       preparingStreamId = "";
     }
-    if (token !== playbackSeq || error?.message === "Reproducao cancelada.") {
+    if (token !== playbackSeq) {
+      return;
+    }
+    if (error?.message === "Reproducao cancelada.") {
+      hidePlaybackLoading();
       return;
     }
     throw error;
@@ -1506,6 +1524,11 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
   };
 
   els.video.onerror = () => handleFatalError("O navegador nao conseguiu carregar o stream.");
+  const playLoadedVideo = () => {
+    els.video.play().catch(() => {
+      hidePlaybackLoading();
+    });
+  };
 
   if (mediaKind === "mpegts" && window.mpegts && mpegts.getFeatureList().mseLivePlayback) {
     const shouldWaitForInitialBuffer = options.isLive !== false && options.waitForInitialBuffer !== false;
@@ -1536,7 +1559,7 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
       });
     }
     if (!shouldWaitForInitialBuffer) {
-      els.video.play().catch(() => undefined);
+      playLoadedVideo();
     }
     return true;
   }
@@ -1550,7 +1573,7 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
 
   if (mediaKind === "native") {
     els.video.src = streamUrl;
-    els.video.play().catch(() => undefined);
+    playLoadedVideo();
     return true;
   }
 
@@ -1558,7 +1581,7 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
     els.video.src = streamUrl;
     els.video.load();
     if (options.stableHls || options.isLive === false) {
-      els.video.play().catch(() => undefined);
+      playLoadedVideo();
     } else {
       startLivePlaybackMonitor();
     }
@@ -1601,7 +1624,7 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
       if (!stableHls && options.isLive !== false) {
         startLivePlaybackMonitor();
       } else {
-        els.video.play().catch(() => undefined);
+        playLoadedVideo();
       }
     });
     hls.on(Hls.Events.ERROR, (_, data) => {
@@ -1619,15 +1642,23 @@ function loadPlayer(streamUrl, mediaKind, options = {}) {
 }
 
 async function stopActiveStream() {
+  const run = stopInFlight.then(() => finishStopActiveStream());
+  stopInFlight = run.then(() => undefined, () => undefined);
+  await run;
+}
+
+async function finishStopActiveStream() {
   playbackSeq += 1;
   hidePlaybackLoading();
-  if (!activeStreamId) {
+  clearTimeout(playbackWaitTimer);
+  if (!activeStreamId && !preparingStreamId) {
     destroyPlayer();
     return;
   }
 
   const streamId = activeStreamId || preparingStreamId;
   const selectedEntry = activeEntry;
+  rememberResumeTarget(streamId, selectedEntry);
   logUserAction("Parando stream", { url: streamId });
   activeStreamId = "";
   activeEntry = selectedEntry;

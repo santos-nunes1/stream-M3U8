@@ -4449,6 +4449,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                     "last_access": now,
                     "expires_at": now + float(os.getenv("TRANSMUX_SESSION_TTL_SECONDS", str(2 * 60 * 60))),
                     "profile": profile,
+                    "generation": int(generation or 0),
                 }
                 current_generation = int(self.stream_generations.get(self._stream_key(stream_id, user_id, session_id)) or 0)
                 if generation is not None and current_generation != generation:
@@ -4541,8 +4542,8 @@ class StreamApplicationServer(ThreadingHTTPServer):
         return False
 
     def stop_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "") -> None:
-        self._bump_stream_generation(stream_id, user_id, session_id)
-        self._kill_transmux_stream(stream_id, user_id, session_id)
+        generation = self._bump_stream_generation(stream_id, user_id, session_id)
+        self._kill_transmux_stream(stream_id, user_id, session_id, max_generation=generation)
 
     def _stream_key(self, stream_id: str, user_id: str = "", session_id: str = "") -> str:
         return f"{user_id}\n{session_id}\n{stream_id}"
@@ -4568,7 +4569,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
         with self.transmux_lock:
             return int(self.stream_generations.get(key) or 0)
 
-    def _kill_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "") -> None:
+    def _kill_transmux_stream(self, stream_id: str, user_id: str = "", session_id: str = "", max_generation: Optional[int] = None) -> None:
         with self.transmux_lock:
             tokens = [
                 token
@@ -4576,6 +4577,7 @@ class StreamApplicationServer(ThreadingHTTPServer):
                 if session.get("stream_id") == stream_id
                 and (not user_id or session.get("user_id") == user_id)
                 and (not session_id or session.get("session_id") == session_id)
+                and (max_generation is None or int(session.get("generation") or 0) <= max_generation)
             ]
             sessions = [self.transmux_sessions.pop(token) for token in tokens]
         for session in sessions:
